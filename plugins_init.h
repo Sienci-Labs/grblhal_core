@@ -118,6 +118,11 @@
     boot_entry_init();
 #endif
 
+#if AUX_MACROS_ENABLE
+    extern bool aux_macros_init (void);
+    aux_macros_init();
+#endif
+
 // End third party plugin definitions.
 
 #if ODOMETER_ENABLE
