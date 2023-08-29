@@ -113,6 +113,11 @@
     status_light_init();
 #endif
 
+#if BOOT_ENTRY_ENABLE
+    extern void boot_entry_init (void);
+    boot_entry_init();
+#endif
+
 // End third party plugin definitions.
 
 #if ODOMETER_ENABLE
