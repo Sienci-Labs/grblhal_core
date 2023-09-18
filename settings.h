@@ -162,7 +162,7 @@ typedef enum {
 
 // Optional driver implemented settings
 
-    // Normally used for Ethernet or WiFi Station
+    // Normally used for Ethernet
     Setting_Hostname = 300,
     Setting_IpMode = 301,
     Setting_IpAddress = 302,
@@ -184,6 +184,7 @@ typedef enum {
     Setting_WebSocketPort2 = 317,
     Setting_FtpPort2 = 318,
 
+    // Normally used for WiFi Station
     Setting_Hostname3 = 320,
     Setting_IpMode3 = 321,
     Setting_IpAddress3 = 322,
@@ -201,6 +202,8 @@ typedef enum {
     Setting_NTPServerURI_3 = 334,
     Setting_Timezone = 335,
     Setting_DSTActive = 336,
+
+    Setting_Wifi_AP_BSSID = 337,
 
     Setting_TrinamicDriver = 338,
     Setting_TrinamicHoming = 339,
@@ -299,10 +302,18 @@ typedef enum {
     Setting_VFD_20 = 472,
     Setting_VFD_21 = 473,
 
+    Setting_VFD_ModbusAddress0 = 476,
+    Setting_VFD_ModbusAddress1 = 477,
+    Setting_VFD_ModbusAddress2 = 478,
+    Setting_VFD_ModbusAddress3 = 479,
+
     Setting_Fan0OffDelay = 480,
     Setting_AutoReportInterval = 481,
     Setting_TimeZoneOffset = 482,
     Setting_FanToSpindleLink = 483,
+    Setting_UnlockAfterEStop = 484,
+    Setting_EnableToolPersistence = 485,
+    Setting_OffsetLock = 486,
 
     Setting_Macro0 = 490,
     Setting_Macro1 = 491,
@@ -325,6 +336,70 @@ typedef enum {
     Setting_MacroPort7 = 507,
     Setting_MacroPort8 = 508,
     Setting_MacroPort9 = 509,
+
+    Setting_SpindleEnable0 = 510,
+    Setting_SpindleEnable1 = 511,
+    Setting_SpindleEnable2 = 512,
+    Setting_SpindleEnable3 = 513,
+    Setting_SpindleEnable4 = 514,
+    Setting_SpindleEnable5 = 515,
+    Setting_SpindleEnable6 = 516,
+    Setting_SpindleEnable7 = 517,
+
+    Setting_SpindleToolStart0 = 520,
+    Setting_SpindleToolStart1 = 521,
+    Setting_SpindleToolStart2 = 522,
+    Setting_SpindleToolStart3 = 523,
+    Setting_SpindleToolStart4 = 524,
+    Setting_SpindleToolStart5 = 525,
+    Setting_SpindleToolStart6 = 526,
+    Setting_SpindleToolStart7 = 527,
+
+    Setting_MQTTBrokerIpAddress = 530,
+    Setting_MQTTBrokerPort      = 531,
+    Setting_MQTTBrokerUserName  = 532,
+    Setting_MQTTBrokerPassword  = 533,
+
+    Setting_NGCDebugOut = 534,
+
+    Setting_Panel_SpindleSpeed       = 540,  // NOTE: Reserving settings values 540 to 579 for panel settings.
+    Setting_Panel_ModbusAddress      = 541,
+    Setting_Panel_UpdateInterval     = 542,
+    Setting_Panel_JogSpeed_x1        = 543,
+    Setting_Panel_JogSpeed_x10       = 544,
+    Setting_Panel_JogSpeed_x100      = 545,
+    Setting_Panel_JogSpeed_Keypad    = 546,
+    Setting_Panel_JogDistance_x1     = 547,
+    Setting_Panel_JogDistance_x10    = 548,
+    Setting_Panel_JogDistance_x100   = 549,
+    Setting_Panel_JogDistance_Keypad = 550,
+    Setting_Panel_JogAccelRamp       = 551,
+    Setting_Panel_Encoder0_Mode      = 552,
+    Setting_Panel_Encoder0_Cpd       = 553,
+    Setting_Panel_Encoder1_Mode      = 554,
+    Setting_Panel_Encoder1_Cpd       = 555,
+    Setting_Panel_Encoder2_Mode      = 556,
+    Setting_Panel_Encoder2_Cpd       = 557,
+    Setting_Panel_Encoder3_Mode      = 558,
+    Setting_Panel_Encoder3_Cpd       = 559,
+    Setting_Panel_SettingsMax        = 579,
+
+    Setting_ModbusTCPBase       = 600,    // Reserving settings values 600 to 639 for ModBus TCP (8 sets)
+    Setting_ModbusIpAddressBase = Setting_ModbusTCPBase + Setting_ModbusIpAddress,
+    Setting_ModbusPortBase      = Setting_ModbusTCPBase + Setting_ModbusPort,
+    Setting_ModbusIdBase        = Setting_ModbusTCPBase + Setting_ModbusId,
+    Setting_ModbusTCPMax        = 639,
+
+    Setting_Kinematics0         = 640,
+    Setting_Kinematics1         = 641,
+    Setting_Kinematics2         = 642,
+    Setting_Kinematics3         = 643,
+    Setting_Kinematics4         = 644,
+    Setting_Kinematics5         = 645,
+    Setting_Kinematics6         = 646,
+    Setting_Kinematics7         = 647,
+    Setting_Kinematics8         = 648,
+    Setting_Kinematics9         = 649,
 
     Setting_SettingsMax,
     Setting_SettingsAll = Setting_SettingsMax,
@@ -388,11 +463,11 @@ typedef union {
                  force_initialization_alarm      :1,
                  legacy_rt_commands              :1,
                  restore_after_feed_hold         :1,
-                 unused1                         :1,
+                 ngc_debug_out                   :1,
                  g92_is_volatile                 :1,
                  compatibility_level             :4,
                  no_restore_position_after_M6    :1,
-                 unassigned                      :1;
+                 no_unlock_after_estop           :1;
     };
 } settingflags_t;
 
@@ -449,7 +524,8 @@ typedef union {
         uint8_t enabled                 :1,
                 deactivate_upon_init    :1,
                 enable_override_control :1,
-                unassigned              :5;
+                unassigned              :2,
+                offset_lock             :3;
     };
 } parking_setting_flags_t;
 
@@ -577,7 +653,19 @@ typedef struct {
     limit_settings_flags_t flags;
     axes_signals_t invert;
     axes_signals_t disable_pullup;
+//    axes_signals_t soft_enabled; // TODO: add per axis soft limits, replace soft_enabled flag
 } limit_settings_t;
+
+typedef union {
+    uint8_t value;
+    uint8_t mask;
+    struct {
+        uint8_t g59_1  :1,
+                g59_2  :1,
+                g59_3  :1,
+                unused :5;
+    };
+} offset_lock_t;
 
 typedef union {
     uint8_t value;
@@ -617,10 +705,11 @@ typedef struct {
     toolchange_mode_t mode;
 } tool_change_settings_t;
 
-// Global persistent settings (Stored from byte persistent storage_ADDR_GLOBAL onwards)
+// Global persistent settings (Stored from byte NVS_ADDR_GLOBAL onwards)
 typedef struct {
     // Settings struct version
     uint32_t version;
+//    uint32_t build_date;  // TODO: add in next settings version?, set to GRBL_BUILD
     float junction_deviation;
     float arc_tolerance;
     float g73_retract;
@@ -644,62 +733,75 @@ typedef struct {
     safety_door_settings_t safety_door;
     position_pid_t position;    // Used for synchronized motion
     ioport_signals_t ioport;
+ // offset_lock_t offset_lock; // TODO: add in next settings version.
 } settings_t;
 
 typedef enum {
-    Group_Root = 0,
-    Group_General,
-    Group_ControlSignals,
-    Group_Limits,
-    Group_Limits_DualAxis,
-    Group_Coolant,
-    Group_Spindle,
-    Group_Spindle_Sync,
-    Group_Spindle_ClosedLoop,
-    Group_Toolchange,
-    Group_Plasma,
-    Group_Homing,
-    Group_Probing,
-    Group_SafetyDoor,
-    Group_Jogging,
-    Group_Networking,
-    Group_Networking_Wifi,
-    Group_Bluetooth,
-    Group_AuxPorts,
-    Group_ModBus,
-    Group_Encoders,
-    Group_Encoder0,
-    Group_Encoder1,
-    Group_Encoder2,
-    Group_Encoder3,
-    Group_Encoder4,
-    Group_UserSettings,
-    Group_Stepper,
-    Group_MotorDriver,
-    Group_VFD,
-    Group_CANbus,
-    Group_Axis,
+    Group_Root = 0,             //!< 0
+    Group_General,              //!< 1
+    Group_ControlSignals,       //!< 2
+    Group_Limits,               //!< 3
+    Group_Limits_DualAxis,      //!< 4
+    Group_Coolant,              //!< 5
+    Group_Spindle,              //!< 6
+    Group_Spindle_Sync,         //!< 7
+    Group_Spindle_ClosedLoop,   //!< 8
+    Group_Toolchange,           //!< 9
+    Group_Plasma,               //!< 10
+    Group_Homing,               //!< 11
+    Group_Probing,              //!< 12
+    Group_SafetyDoor,           //!< 13
+    Group_Jogging,              //!< 14
+    Group_Networking,           //!< 15
+    Group_Networking_Wifi,      //!< 16
+    Group_Bluetooth,            //!< 17
+    Group_AuxPorts,             //!< 18
+    Group_ModBus,               //!< 19
+    Group_ModBusUnit0,          //!< 20
+    Group_ModBusUnit1,          //!< 21
+    Group_ModBusUnit2,          //!< 22
+    Group_ModBusUnit3,          //!< 23
+    Group_ModBusUnit4,          //!< 24
+    Group_ModBusUnit5,          //!< 25
+    Group_ModBusUnit6,          //!< 26
+    Group_ModBusUnit7,          //!< 27
+    Group_Encoders,             //!< 28
+    Group_Encoder0,             //!< 29
+    Group_Encoder1,             //!< 30
+    Group_Encoder2,             //!< 31
+    Group_Encoder3,             //!< 32
+    Group_Encoder4,             //!< 33
+    Group_UserSettings,         //!< 34
+    Group_Stepper,              //!< 35
+    Group_MotorDriver,          //!< 36
+    Group_VFD,                  //!< 37
+    Group_CANbus,               //!< 38
+    Group_Embroidery,           //!< 39
+    Group_Panel,                //!< 40
+    Group_Kinematics,           //!< 41
+    Group_Axis,                 //!< 42
 // NOTE: axis groups MUST be sequential AND last
-    Group_Axis0,
-    Group_XAxis = Group_Axis0,
-    Group_YAxis,
-    Group_ZAxis,
+    Group_Axis0,                //!< 43
+    Group_XAxis = Group_Axis0,  //!< 44
+    Group_YAxis,                //!< 45
+    Group_ZAxis,                //!< 46
 #ifdef A_AXIS
-    Group_AAxis,
+    Group_AAxis,                //!< 47
 #endif
 #ifdef B_AXIS
-    Group_BAxis,
+    Group_BAxis,                //!< 48
 #endif
 #ifdef C_AXIS
-    Group_CAxis,
+    Group_CAxis,                //!< 49
 #endif
 #ifdef U_AXIS
-    Group_UAxis,
+    Group_UAxis,                //!< 50
 #endif
 #ifdef V_AXIS
-    Group_VAxis,
+    Group_VAxis,                //!< 51
 #endif
-    Group_All = Group_Root
+    Group_Unknown = 99,         //!< 99
+    Group_All = Group_Root      //!< 0
 } setting_group_t;
 
 typedef enum {
@@ -718,10 +820,11 @@ typedef enum {
     Format_Int16,
 } setting_datatype_t;
 
-typedef struct {
+typedef struct setting_group_detail {
     setting_group_t parent;
     setting_group_t id;
     const char *name;
+    bool (*is_available)(const struct setting_group_detail *group);
 } setting_group_detail_t;
 
 typedef enum {
@@ -744,8 +847,10 @@ typedef union {
     uint8_t value;
     struct {
         uint8_t reboot_required :1,
-                allow_null: 1,
-                unused :6;
+                allow_null      :1,
+                subgroups       :1,
+                increment       :4,
+                unused          :1;
     };
 } setting_detail_flags_t;
 
@@ -770,6 +875,14 @@ typedef struct {
     const char *description;
 } setting_descr_t;
 
+typedef union {
+    uint8_t value;
+    struct {
+        uint8_t spindle    :1,
+                unassigned :7;
+    };
+} settings_changed_flags_t;
+
 typedef status_code_t (*setting_set_int_ptr)(setting_id_t id, uint_fast16_t value);
 typedef status_code_t (*setting_set_float_ptr)(setting_id_t id, float value);
 typedef status_code_t (*setting_set_string_ptr)(setting_id_t id, char *value);
@@ -778,14 +891,18 @@ typedef float (*setting_get_float_ptr)(setting_id_t id);
 typedef char *(*setting_get_string_ptr)(setting_id_t id);
 typedef bool (*setting_output_ptr)(const setting_detail_t *setting, uint_fast16_t offset, void *data);
 
+typedef void (*setting_changed_ptr)(setting_id_t id);
+
 /*! \brief Pointer to callback function to be called when settings are loaded or changed.
 \param settings pointer to \a settings_t struct containing the settings.
+\param changed a \a settings_changed_flags_t union containing the changed setting groups.
 */
-typedef void (*settings_changed_ptr)(settings_t *settings);
+typedef void (*settings_changed_ptr)(settings_t *settings, settings_changed_flags_t changed);
 
 typedef void (*driver_settings_load_ptr)(void);
 typedef void (*driver_settings_save_ptr)(void);
 typedef void (*driver_settings_restore_ptr)(void);
+typedef bool (*driver_settings_iterator_ptr)(const setting_detail_t *setting, setting_output_ptr callback, void *data);
 
 typedef struct setting_details {
     const uint8_t n_groups;
@@ -802,6 +919,7 @@ typedef struct setting_details {
     driver_settings_save_ptr save;
     driver_settings_load_ptr load;
     driver_settings_restore_ptr restore;
+    driver_settings_iterator_ptr iterator;
 } setting_details_t;
 
 // NOTE: this must match the signature of on_get_settings in the setting_details_t structure above!
@@ -868,5 +986,6 @@ bool setting_is_list (const setting_detail_t *setting);
 bool setting_is_integer (const setting_detail_t *setting);
 void setting_remove_elements (setting_id_t id, uint32_t mask);
 bool settings_add_spindle_type (const char *type);
+limit_signals_t settings_get_homing_source (void);
 
 #endif

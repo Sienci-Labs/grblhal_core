@@ -132,6 +132,13 @@
 #define I2C_STROBE_ENABLE   0
 #endif
 
+#if DISPLAY_ENABLE == 2
+#ifdef I2C_ENABLE
+#undef I2C_ENABLE
+#endif
+#define I2C_ENABLE 1
+#endif
+
 #ifndef EEPROM_ENABLE
 #define EEPROM_ENABLE       0
 #endif
@@ -140,7 +147,7 @@
 #endif
 
 #ifndef I2C_ENABLE
-#if EEPROM_ENABLE || KEYPAD_ENABLE == 1 || I2C_STROBE_ENABLE || (TRINAMIC_ENABLE && TRINAMIC_I2C)
+#if EEPROM_ENABLE || KEYPAD_ENABLE == 1 || DISPLAY_ENABLE == 1 || DISPLAY_ENABLE == 2 || I2C_STROBE_ENABLE || (TRINAMIC_ENABLE && TRINAMIC_I2C)
 #define I2C_ENABLE 1
 #else
 #define I2C_ENABLE 0
@@ -180,20 +187,8 @@
 #define TRINAMIC_DEV        0
 #endif
 
-#ifndef SDCARD_ENABLE
-#define SDCARD_ENABLE       0
-#endif
-
 #ifndef LITTLEFS_ENABLE
 #define LITTLEFS_ENABLE     0
-#endif
-
-#ifndef SPI_ENABLE
-#if SDCARD_ENABLE || TRINAMIC_SPI_ENABLE
-#define SPI_ENABLE 1
-#else
-#define SPI_ENABLE 0
-#endif
 #endif
 
 #ifndef PWM_RAMPED
@@ -206,12 +201,30 @@
 #define PPI_ENABLE          0
 #endif
 
+#if EMBROIDERY_ENABLE
+#if defined(SDCARD_ENABLE) && SDCARD_ENABLE == 0
+#undef SDCARD_ENABLE
+#endif
+#ifndef SDCARD_ENABLE
+#define SDCARD_ENABLE       1
+#endif
+#endif
+
 #ifndef VFD_SPINDLE
 #if VFD_ENABLE
 #define VFD_SPINDLE         1
 #else
 #define VFD_SPINDLE         0
 #endif
+#endif
+
+#define MODBUS_RTU_ENABLED     0b001
+#define MODBUS_RTU_DIR_ENABLED 0b010
+#define MODBUS_TCP_ENABLED     0b100
+
+#if MODBUS_ENABLE == 2
+#undef MOBUS_ENABLE
+#define MOBUS_ENABLE 0b011
 #endif
 
 #ifndef MODBUS_ENABLE
@@ -333,10 +346,17 @@
 #define FTP_ENABLE          0
 #endif
 #ifndef MDNS_ENABLE
-#define MDNS_ENABLE             0
+#define MDNS_ENABLE         0
 #endif
 #ifndef SSDP_ENABLE
-#define SSDP_ENABLE             0
+#define SSDP_ENABLE         0
+#endif
+#if SSDP_ENABLE && !HTTP_ENABLE
+#undef HTTP_ENABLE
+#define HTTP_ENABLE         1
+#endif
+#ifndef MQTT_ENABLE
+#define MQTT_ENABLE         0
 #endif
 
 #if ETHERNET_ENABLE || WIFI_ENABLE
@@ -364,6 +384,12 @@
 #ifndef NETWORK_HTTP_PORT
 #define NETWORK_HTTP_PORT       80
 #endif
+#ifndef NETWORK_MODBUS_PORT
+#define NETWORK_MODBUS_PORT     502
+#endif
+#ifndef NETWORK_MQTT_PORT
+#define NETWORK_MQTT_PORT       1883
+#endif
 #ifndef NETWORK_WEBSOCKET_PORT
 #if HTTP_ENABLE
 #define NETWORK_WEBSOCKET_PORT  81
@@ -377,12 +403,38 @@
 #if HTTP_ENABLE && NETWORK_WEBSOCKET_PORT == NETWORK_HTTP_PORT
 #warning "HTTP and WebSocket protocols cannot share the same port!"
 #endif
+#endif // ETHERNET_ENABLE || WIFI_ENABLE
+
+#if WIFI_ENABLE
+
+#ifndef NETWORK_STA_SSID
+#define NETWORK_STA_SSID         ""
+#endif
+#ifndef NETWORK_STA_PASSWORD
+#define NETWORK_STA_PASSWORD     ""
+#endif
+#ifndef NETWORK_STA_HOSTNAME
+#define NETWORK_STA_HOSTNAME     "grblHAL"
+#endif
+#ifndef NETWORK_STA_IPMODE
+#define NETWORK_STA_IPMODE       1 // DHCP
+#endif
+#ifndef NETWORK_STA_IP
+#define NETWORK_STA_IP           "192.168.5.1"
+#endif
+#ifndef NETWORK_STA_GATEWAY
+#define NETWORK_STA_GATEWAY      "192.168.5.1"
+#endif
+#ifndef NETWORK_STA_MASK
+#define NETWORK_STA_MASK         "255.255.255.0"
+#endif
+
 #if WIFI_SOFTAP > 0
 #ifndef NETWORK_AP_SSID
 #define NETWORK_AP_SSID         "grblHAL_AP"
 #endif
 #ifndef NETWORK_AP_PASSWORD
-#define NETWORK_AP_PASSWORD     "grblHAL"
+#define NETWORK_AP_PASSWORD     "grblHALpwd"
 #endif
 #ifndef NETWORK_AP_HOSTNAME
 #define NETWORK_AP_HOSTNAME     "grblHAL_AP"
@@ -399,6 +451,18 @@
 #ifndef NETWORK_AP_MASK
 #define NETWORK_AP_MASK         "255.255.255.0"
 #endif
+#endif // WIFI_SOFTAP
+#endif // WIFI_ENABLE
+
+#ifndef SDCARD_ENABLE
+#define SDCARD_ENABLE       0
+#endif
+
+#ifndef SPI_ENABLE
+#if SDCARD_ENABLE || TRINAMIC_SPI_ENABLE
+#define SPI_ENABLE 1
+#else
+#define SPI_ENABLE 0
 #endif
 #endif
 

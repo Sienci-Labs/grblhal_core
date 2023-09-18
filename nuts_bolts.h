@@ -42,9 +42,15 @@
 
 #define TOLERANCE_EQUAL 0.0001f
 
-#define TAN_30 0.57735f         // Used for threading calculations (60 degree inserts)
-#define RADDEG 0.0174532925f    // Radians per degree
-#define DEGRAD 57.29577951f     // Degrees per radians
+#define RADDEG  0.01745329251994329577f // Radians per degree
+#define DEGRAD 57.29577951308232087680f // Degrees per radians
+#define SQRT3   1.73205080756887729353f
+#define SIN120  0.86602540378443864676f
+#define COS120 -0.5f
+#define TAN60   1.73205080756887729353f
+#define SIN30   0.5f
+#define TAN30   0.57735026918962576451f
+#define TAN30_2 0.28867513459481288225f
 
 #define ABORTED (sys.abort || sys.cancel)
 
@@ -142,17 +148,23 @@ typedef union {
         float x;
         float y;
     };
-} point_2d;
+} point_2d_t;
 
 #pragma pack(push, 1)
 
-//! \brief Limit switches struct, consists of four packed axes_signals_t structs.
+//! \brief Limit switches struct, consists of four packed axes_signals_t structs in 32 bits.
 typedef struct {
     axes_signals_t min;     //!< Min limit switches status, required.
     axes_signals_t max;     //!< Max limit switches status, optional.
     axes_signals_t min2;    //!< Secondary min limit switch(es) status, required for auto squaring enabled axes.
     axes_signals_t max2;    //!< Secondary max limit switches status, optional (of no practical use?).
 } limit_signals_t;
+
+//! \brief Home switches struct, consists of two packed axes_signals_t structs.
+typedef struct {
+    axes_signals_t a;       //!< Primary home switches status, optional. Limit signals are used for homing if not available.
+    axes_signals_t b;       //!< Secondary home switch(es) status, required for auto squaring enabled axes if primary switches are available.
+} home_signals_t;
 
 #pragma pack(pop)
 
@@ -180,6 +192,7 @@ typedef enum {
 #endif
 #define clear_vector(a) memset(a, 0, sizeof(a))
 #define isequal_position_vector(a, b) !memcmp(a, b, sizeof(coord_data_t))
+#define is0_position_vector(a) !memcmp(a, &((coord_data_t){0}), sizeof(coord_data_t))
 
 // Bit field and masking macros
 #ifndef bit

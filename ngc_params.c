@@ -3,7 +3,7 @@
 
   Part of grblHAL
 
-  Copyright (c) 2021 Terje Io
+  Copyright (c) 2021-2023 Terje Io
 
   Grbl is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -84,9 +84,18 @@ static float _relative_pos (uint_fast8_t axis)
 
 static float probe_coord (ngc_param_id_t id)
 {
-    uint_fast8_t axis = id % 10;
+    float value = 0.0f;
+    uint_fast8_t axis = (id % 10) - 1;
+    coord_system_t data;
 
-    return axis <= N_AXIS ? sys.probe_position[axis - 1] : 0.0f;
+    if(axis < N_AXIS && (sys.probe_coordsys_id == gc_state.modal.coord_system.id || settings_read_coord_data(sys.probe_coordsys_id, &data.xyz))) {
+        value = sys.probe_position[axis] / settings.axis[axis].steps_per_mm -
+                 (sys.probe_coordsys_id == gc_state.modal.coord_system.id ? gc_state.modal.coord_system.xyz[axis] : data.xyz[axis]);
+        if(settings.flags.report_inches)
+            value *= 25.4f;
+    }
+
+    return value;
 }
 
 static float scaling_factors (ngc_param_id_t id)
@@ -116,7 +125,7 @@ static float m66_result (ngc_param_id_t id)
 
 static float tool_number (ngc_param_id_t id)
 {
-    return (float)gc_state.tool->tool;
+    return (float)gc_state.tool->tool_id;
 }
 
 static float tool_offset (ngc_param_id_t id)
@@ -158,7 +167,7 @@ static float g30_home (ngc_param_id_t id)
 
 static float coord_system (ngc_param_id_t id)
 {
-    return (float)gc_state.modal.coord_system.id;
+    return (float)gc_state.modal.coord_system.id + 1;
 }
 
 static float coord_system_offset (ngc_param_id_t id)
@@ -291,6 +300,7 @@ bool ngc_param_set (ngc_param_id_t id, float value)
 
     return ok;
 }
+
 PROGMEM static const ngc_named_ro_param_t ngc_named_ro_param[] = {
     { .name = "_vmajor",              .id = NGCParam_vmajor },
     { .name = "_vminor",              .id = NGCParam_vminor },
@@ -424,11 +434,11 @@ float ngc_named_param_get_by_id (ncg_name_param_id_t id)
             break;
 
         case NGCParam_spindle_rpm_mode:
-            value = gc_state.modal.spindle_rpm_mode == SpindleSpeedMode_RPM ? 1.0f : 0.0f;
+            value = gc_state.modal.spindle.rpm_mode == SpindleSpeedMode_RPM ? 1.0f : 0.0f;
             break;
 
         case NGCParam_spindle_css_mode:
-            value = gc_state.modal.spindle_rpm_mode == SpindleSpeedMode_CSS ? 1.0f : 0.0f;
+            value = gc_state.modal.spindle.rpm_mode == SpindleSpeedMode_CSS ? 1.0f : 0.0f;
             break;
 
         case NGCParam_ijk_absolute_mode:
@@ -444,11 +454,11 @@ float ngc_named_param_get_by_id (ncg_name_param_id_t id)
             break;
 
         case NGCParam_spindle_on:
-            value = gc_state.modal.spindle.on ? 1.0f : 0.0f;
+            value = gc_state.modal.spindle.state.on ? 1.0f : 0.0f;
             break;
 
         case NGCParam_spindle_cw:
-            value = gc_state.modal.spindle.ccw ? 1.0f : 0.0f;
+            value = gc_state.modal.spindle.state.ccw ? 1.0f : 0.0f;
             break;
 
         case NGCParam_mist:
@@ -504,7 +514,7 @@ float ngc_named_param_get_by_id (ncg_name_param_id_t id)
             break;
 
         case NGCParam_current_tool:
-            value = (float)gc_state.tool->tool;
+            value = (float)gc_state.tool->tool_id;
             break;
 
         case NGCParam_current_pocket:
@@ -512,7 +522,7 @@ float ngc_named_param_get_by_id (ncg_name_param_id_t id)
             break;
 
         case NGCParam_selected_tool:
-            value = gc_state.tool_change ? (float)gc_state.tool_pending : -1.0f;
+            value = gc_state.tool_pending != gc_state.tool->tool_id ? (float)gc_state.tool_pending : -1.0f;
             break;
 
         case NGCParam_selected_pocket:

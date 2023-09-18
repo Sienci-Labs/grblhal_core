@@ -33,6 +33,7 @@
 #if NGC_EXPRESSIONS_ENABLE
 #include "ngc_expr.h"
 #include "ngc_params.h"
+#include "ngc_flowctrl.h"
 #endif
 
 // NOTE: Max line number is defined by the g-code standard to be 99999. It seems to be an
@@ -171,7 +172,7 @@ static void set_scaling (float factor)
     gc_state.modal.scaling_active = factor != 1.0f;
 
     if(state.value != gc_get_g51_state().value)
-        sys.report.scaling = On;
+        system_add_rt_report(Report_Scaling);
 }
 
 float *gc_get_scaling (void)
@@ -179,7 +180,7 @@ float *gc_get_scaling (void)
     return scale_factor.ijk;
 }
 
-axes_signals_t gc_get_g51_state ()
+axes_signals_t gc_get_g51_state (void)
 {
     uint_fast8_t idx = N_AXIS;
     axes_signals_t scaled = {0};
@@ -240,7 +241,7 @@ void gc_set_tool_offset (tool_offset_mode_t mode, uint_fast8_t idx, int32_t offs
     gc_state.modal.tool_offset_mode = mode;
 
     if(tlo_changed) {
-        sys.report.tool_offset = true;
+        system_add_rt_report(Report_ToolOffset);
         system_flag_wco_change();
     }
 }
@@ -272,7 +273,6 @@ plane_t *gc_get_plane_data (plane_t *plane, plane_select_t select)
 
 void gc_init (void)
 {
-
 #if COMPATIBILITY_LEVEL > 1
     memset(&gc_state, 0, sizeof(parser_state_t));
   #if N_TOOLS
@@ -292,7 +292,7 @@ void gc_init (void)
       #endif
     } else {
         memset(&gc_state, 0, offsetof(parser_state_t, g92_coord_offset));
-        gc_state.tool_pending = gc_state.tool->tool;
+        gc_state.tool_pending = gc_state.tool->tool_id;
         if(hal.tool.select)
             hal.tool.select(gc_state.tool, false);
         // TODO: restore offsets, tool offset mode?
@@ -308,7 +308,7 @@ void gc_init (void)
 
     // Load default override status
     gc_state.modal.override_ctrl = sys.override.control;
-    gc_state.spindle.css.max_rpm = settings.spindle.rpm_max; // default max speed for CSS mode
+    gc_state.spindle.hal = spindle_get(0);
 
     set_scaling(1.0f);
 
@@ -319,8 +319,20 @@ void gc_init (void)
     if (sys.cold_start && !settings.flags.g92_is_volatile && !settings_read_coord_data(CoordinateSystem_G92, &gc_state.g92_coord_offset))
         grbl.report.status_message(Status_SettingReadFail);
 
+    if(grbl.on_wco_changed && (!sys.cold_start ||
+                                !is0_position_vector(gc_state.modal.coord_system.xyz) ||
+                                 !is0_position_vector(gc_state.g92_coord_offset)))
+        grbl.on_wco_changed();
+
+#if NGC_EXPRESSIONS_ENABLE
+    ngc_flowctrl_init();
+#endif
+
 //    if(settings.flags.lathe_mode)
 //        gc_state.modal.plane_select = PlaneSelect_ZX;
+
+    if(grbl.on_parser_init)
+        grbl.on_parser_init(&gc_state);
 }
 
 
@@ -336,21 +348,46 @@ bool gc_laser_ppi_enable (uint_fast16_t ppi, uint_fast16_t pulse_length)
 
 void gc_spindle_off (void)
 {
-    gc_state.spindle.rpm = sys.spindle_rpm = 0.0f;
-    gc_state.modal.spindle.value = 0;
-#ifndef GRBL_ESP32
-    hal.spindle.set_state(gc_state.modal.spindle, 0.0f);
-#else
-    hal.spindle.esp32_off();
-#endif
-    sys.report.spindle = On;
+    gc_state.spindle.rpm = 0.0f;
+    gc_state.modal.spindle.state.value = 0;
+
+    spindle_all_off();
+    system_add_rt_report(Report_Spindle);
 }
 
 void gc_coolant_off (void)
 {
     gc_state.modal.coolant.value = 0;
     hal.coolant.set_state(gc_state.modal.coolant);
-    sys.report.coolant = On;
+    system_add_rt_report(Report_Coolant);
+}
+
+spindle_ptrs_t *gc_spindle_get (void)
+{
+    return gc_state.spindle.hal;
+}
+
+static tool_data_t *tool_get_pending (tool_id_t tool_id)
+{
+#if N_TOOLS
+    return &tool_table[tool_id];
+#else
+    static tool_data_t tool_data = {0};
+
+    memcpy(&tool_data, gc_state.tool, sizeof(tool_data_t));
+    tool_data.tool_id = tool_id;
+
+    return &tool_data;
+#endif
+}
+
+static inline void tool_set (tool_data_t *tool)
+{
+#if N_TOOLS
+    gc_state.tool = tool;
+#else
+    gc_state.tool->tool_id = tool->tool_id;
+#endif
 }
 
 // Add output command to linked list
@@ -379,16 +416,16 @@ static status_code_t init_sync_motion (plan_line_data_t *pl_data, float pitch)
 {
     pl_data->condition.inverse_time = Off;
     pl_data->feed_rate = gc_state.distance_per_rev = pitch;
-    pl_data->condition.is_rpm_pos_adjusted = Off;   // Switch off CSS.
+    pl_data->spindle.css = NULL;                    // Switch off CSS.
     pl_data->overrides = sys.override.control;      // Use current override flags and
     pl_data->overrides.sync = On;                   // set to sync overrides on execution of motion.
 
     // Disable feed rate and spindle overrides for the duration of the cycle.
     pl_data->overrides.spindle_rpm_disable = sys.override.control.spindle_rpm_disable = On;
     pl_data->overrides.feed_rate_disable = sys.override.control.feed_rate_disable = On;
-    sys.override.spindle_rpm = DEFAULT_SPINDLE_RPM_OVERRIDE;
+    pl_data->spindle.hal->param->override_pct = DEFAULT_SPINDLE_RPM_OVERRIDE;
     // TODO: need for gc_state.distance_per_rev to be reset on modal change?
-    float feed_rate = pl_data->feed_rate * hal.spindle.get_data(SpindleData_RPM)->rpm;
+    float feed_rate = pl_data->feed_rate * pl_data->spindle.hal->get_data(SpindleData_RPM)->rpm;
 
     if(feed_rate == 0.0f)
         FAIL(Status_GcodeSpindleNotRunning); // [Spindle not running]
@@ -398,6 +435,67 @@ static status_code_t init_sync_motion (plan_line_data_t *pl_data, float pitch)
 
     return Status_OK;
 }
+
+// Output and free previously allocated message
+static void output_message (char *message)
+{
+    if(grbl.on_gcode_message)
+        grbl.on_gcode_message(message);
+
+    if(*message)
+        report_message(message, Message_Plain);
+
+    free(message);
+}
+
+#if NGC_EXPRESSIONS_ENABLE
+
+#define NGC_N_ASSIGN_PARAMETERS_PER_BLOCK 10
+
+static ngc_param_t ngc_params[NGC_N_ASSIGN_PARAMETERS_PER_BLOCK];
+
+static status_code_t read_parameter (char *line, uint_fast8_t *char_counter, float *value)
+{
+    char c = *(line + *char_counter);
+    status_code_t status = Status_OK;
+
+    if(c == '#') {
+
+        (*char_counter)++;
+
+        if(*(line + *char_counter) == '<') {
+
+            (*char_counter)++;
+            char *pos = line = line + *char_counter;
+
+            while(*line && *line != '>')
+                line++;
+
+            *char_counter += line - pos + 1;
+
+            if(*line == '>') {
+                *line = '\0';
+                if(!ngc_named_param_get(pos, value))
+                    status = Status_BadNumberFormat;
+                *line = '>';
+            } else
+                status = Status_BadNumberFormat;
+
+        } else if (read_float(line, char_counter, value)) {
+            if(!ngc_param_get((ngc_param_id_t)*value, value))
+                status = Status_BadNumberFormat;
+        } else
+            status = Status_BadNumberFormat;
+
+    } else if(c == '[')
+        status = ngc_eval_expression(line, char_counter, value);
+    else if(!read_float(line, char_counter, value))
+        *value = NAN;
+
+    return status;
+}
+
+#endif // NGC_EXPRESSIONS_ENABLE
 
 // Remove whitespace, control characters, comments and if block delete is active block delete lines
 // else the block delete character. Remaining characters are converted to upper case.
@@ -439,12 +537,80 @@ char *gc_normalize_block (char *block, char **message)
                 break;
 
             case ')':
-                if(comment && !hal.driver_cap.no_gcode_message_handling) {
-                    size_t len = s1 - comment - 4;
-                    if(message && *message == NULL && !strncmp(comment, "(MSG,", 5) && (*message = malloc(len))) {
-                        *s1 = '\0';
-                        memcpy(*message, comment + 5, len);
+                if(comment && !gc_state.skip_blocks) {
+                    *s1 = '\0';
+                    if(!hal.driver_cap.no_gcode_message_handling) {
+
+                        size_t len = s1 - comment - 4;
+
+                        if(message && *message == NULL && !strncmp(comment, "(MSG,", 5) && (*message = malloc(len))) {
+                            comment += 5;
+                            // Trim leading spaces
+                            while(*comment == ' ') {
+                                comment++;
+                                len--;
+                            }
+                            memcpy(*message, comment, len);
+                        }
+
+#if NGC_EXPRESSIONS_ENABLE
+                        // Debug message string substitution
+                        if(message && *message == NULL && !strncmp(comment, "(DEBUG,", 7)) {
+
+                            if(settings.flags.ngc_debug_out) {
+
+                                float value;
+                                char *s3;
+                                uint_fast8_t char_counter = 0;
+
+                                len = 0;
+                                comment += 7;
+
+                                // Trim leading spaces
+                                while(*comment == ' ')
+                                    comment++;
+
+                                // Calculate length of substituted string
+                                while((c = comment[char_counter++])) {
+                                    if(c == '#') {
+                                        char_counter--;
+                                        if(read_parameter(comment, &char_counter, &value) == Status_OK)
+                                            len += strlen(ftoa(value, 6));
+                                        else
+                                            len += 3; // "N/A"
+                                    } else
+                                        len++;
+                                }
+
+                                // Perform substitution
+                                if((s3 = *message = malloc(len + 1))) {
+
+                                    *s3 = '\0';
+                                    char_counter = 0;
+
+                                    while((c = comment[char_counter++])) {
+                                        if(c == '#') {
+                                            char_counter--;
+                                            if(read_parameter(comment, &char_counter, &value) == Status_OK)
+                                                strcat(s3, ftoa(value, 6));
+                                            else
+                                                strcat(s3, "N/A");
+                                            s3 = strchr(s3, '\0');
+                                        } else {
+                                            *s3++ = c;
+                                            *s3 = '\0';
+                                        }
+                                    }
+                                }
+                            }
+
+                            *comment = '\0'; // Do not generate grbl.on_gcode_comment event!
+                        }
+#endif // NGC_EXPRESSIONS_ENABLE
                     }
+
+                    if(*comment && *message == NULL && grbl.on_gcode_comment)
+                        grbl.on_gcode_comment(comment);
                 }
                 comment = NULL;
                 break;
@@ -455,9 +621,13 @@ char *gc_normalize_block (char *block, char **message)
                 break;
         }
 
+#if NGC_EXPRESSIONS_ENABLE
+        if(comment && s1 - comment < (strncmp(comment, "(DEBU,", 5) ? 5 : 7))
+            *s1 = CAPS(c);
+#else
         if(comment && s1 - comment < 5)
             *s1 = CAPS(c);
-
+#endif
         s1++;
     }
 
@@ -466,59 +636,11 @@ char *gc_normalize_block (char *block, char **message)
     return block;
 }
 
-#if NGC_EXPRESSIONS_ENABLE
-
-#define NGC_N_ASSIGN_PARAMETERS_PER_BLOCK 10
-
-static ngc_param_t ngc_params[NGC_N_ASSIGN_PARAMETERS_PER_BLOCK];
-
-static status_code_t read_parameter (char *line, uint_fast8_t *char_counter, float *value)
-{
-    char c = *(line + *char_counter);
-    status_code_t status = Status_OK;
-
-    if(c == '#') {
-
-        (*char_counter)++;
-
-        if(*(line + *char_counter) == '<') {
-
-            (*char_counter)++;
-            char *pos = line + *char_counter;
-
-            while(*line && *line != '>')
-                line++;
-
-            *char_counter += line - pos + 1;
-
-            if(*line == '>') {
-                *line = '\0';
-                if(!ngc_named_param_get(pos, value))
-                    status = Status_BadNumberFormat;
-            } else
-                status = Status_BadNumberFormat;
-
-        } else if (read_float(line, char_counter, value)) {
-            if(!ngc_param_get((ngc_param_id_t)*value, value))
-                status = Status_BadNumberFormat;
-        } else
-            status = Status_BadNumberFormat;
-
-    } else if(c == '[')
-        status = ngc_eval_expression(line, char_counter, value);
-    else if(!read_float(line, char_counter, value))
-        *value = NAN;
-
-    return status;
-}
-
-#endif
-
 // Parses and executes one block (line) of 0-terminated G-Code.
 // In this function, all units and positions are converted and exported to internal functions
 // in terms of (mm, mm/min) and absolute machine coordinates, respectively.
 
-status_code_t gc_execute_block(char *block)
+status_code_t gc_execute_block (char *block)
 {
     static const parameter_words_t axis_words_mask = {
         .x = On,
@@ -570,7 +692,64 @@ status_code_t gc_execute_block(char *block)
     static parser_block_t gc_block;
 
 #if NGC_EXPRESSIONS_ENABLE
+
+    static const parameter_words_t o_label = {
+        .o = On
+    };
+
     uint_fast8_t ngc_param_count = 0;
+
+    // NOTE: this array has to match the parameter_words_t order!
+    PROGMEM static const gc_value_ptr_t gc_value_ptr[] = {
+       { NULL, ValueType_NA }, // $
+#if N_AXIS > 3
+       { &gc_block.values.xyz[A_AXIS], ValueType_Float },
+#else
+       { NULL, ValueType_NA },
+#endif
+#if N_AXIS > 4
+       { &gc_block.values.xyz[B_AXIS], ValueType_Float },
+#else
+       { NULL, ValueType_NA },
+#endif
+#if N_AXIS > 5
+       { &gc_block.values.xyz[C_AXIS], ValueType_Float },
+#else
+       { NULL, ValueType_NA },
+#endif
+       { &gc_block.values.ijk[I_VALUE], ValueType_Float },
+       { &gc_block.values.ijk[J_VALUE], ValueType_Float },
+       { &gc_block.values.ijk[K_VALUE], ValueType_Float },
+       { &gc_block.values.d, ValueType_Float },
+       { &gc_block.values.e, ValueType_Float },
+       { &gc_block.values.f, ValueType_Float },
+       { NULL, ValueType_NA }, // G
+       { &gc_block.values.h, ValueType_UInt32 },
+       { NULL, ValueType_NA }, // L
+       { &gc_block.values.m, ValueType_Float },
+       { NULL, ValueType_NA }, // N
+       { NULL, ValueType_NA }, // O
+       { NULL, ValueType_NA }, // P
+       { &gc_block.values.q, ValueType_Float },
+       { &gc_block.values.r, ValueType_Float },
+       { &gc_block.values.s, ValueType_Float },
+       { &gc_block.values.t, ValueType_UInt32 },
+#if N_AXIS > 6
+       { &gc_block.values.xyz[U_AXIS], ValueType_Float },
+#else
+       { NULL, ValueType_NA },
+#endif
+#if N_AXIS > 7
+       { &gc_block.values.xyz[V_AXIS], ValueType_Float },
+#else
+       { NULL, ValueType_NA },
+#endif
+       { NULL, ValueType_NA }, // W
+       { &gc_block.values.xyz[X_AXIS], ValueType_Float },
+       { &gc_block.values.xyz[Y_AXIS], ValueType_Float },
+       { &gc_block.values.xyz[Z_AXIS], ValueType_Float }
+    };
+
 #endif
 
     char *message = NULL;
@@ -578,10 +757,8 @@ status_code_t gc_execute_block(char *block)
     block = gc_normalize_block(block, &message);
 
     if(block[0] == '\0') {
-        if(message) {
-            report_message(message, Message_Plain);
-            free(message);
-        }
+        if(message)
+            output_message(message);
         return Status_OK;
     }
 
@@ -593,10 +770,8 @@ status_code_t gc_execute_block(char *block)
     // functions that empty the planner buffer to execute its task on-time.
     if (block[0] == CMD_PROGRAM_DEMARCATION && block[1] == '\0') {
         gc_state.file_run = !gc_state.file_run;
-        if(message) {
-            report_message(message, Message_Plain);
-            free(message);
-        }
+        if(message)
+            output_message(message);
         return Status_OK;
     }
 
@@ -612,7 +787,7 @@ status_code_t gc_execute_block(char *block)
 
     bool set_tool = false, spindle_programmed = false;
     axis_command_t axis_command = AxisCommand_None;
-    uint_fast8_t port_command = 0;
+    io_mcode_t port_command = (io_mcode_t)0;
     plane_t plane;
 
     // Initialize bitflag tracking variables for axis indices compatible operations.
@@ -630,7 +805,7 @@ status_code_t gc_execute_block(char *block)
         gc_parser_flags.jog_motion = On;
         gc_block.modal.motion = MotionMode_Linear;
         gc_block.modal.feed_mode = FeedMode_UnitsPerMin;
-        gc_block.modal.spindle_rpm_mode = SpindleSpeedMode_RPM;
+        gc_block.modal.spindle.rpm_mode = SpindleSpeedMode_RPM;
         gc_block.values.n = JOG_LINE_NUMBER; // Initialize default line number reported during jog.
     }
 
@@ -657,6 +832,9 @@ status_code_t gc_execute_block(char *block)
         status_code_t status;
 
         if(letter == '#') {
+
+            if(gc_state.skip_blocks)
+                return Status_OK;
 
             if(block[char_counter] == '<') {
 
@@ -698,11 +876,19 @@ status_code_t gc_execute_block(char *block)
             continue;
         }
 
+        if((gc_block.words.mask & o_label.mask) && (gc_block.words.mask & ~o_label.mask) == 0) {
+            char_counter--;
+            return ngc_flowctrl(gc_block.values.o, block, &char_counter, &gc_state.skip_blocks);
+        }
+
         if((letter < 'A' && letter != '$') || letter > 'Z')
             FAIL(Status_ExpectedCommandLetter); // [Expected word letter]
 
         if((status = read_parameter(block, &char_counter, &value)) != Status_OK)
             return status;
+
+        if(gc_state.skip_blocks && letter != 'O')
+            return Status_OK;
 
         if(!is_user_mcode && isnanf(value))
             FAIL(Status_BadNumberFormat);   // [Expected word value]
@@ -751,7 +937,7 @@ status_code_t gc_execute_block(char *block)
                 switch(int_value) {
 
                     case 7: case 8:
-                        if(sys.mode == Mode_Lathe) {
+                        if(settings.mode == Mode_Lathe) {
                             word_bit.modal_group.G15 = On;
                             gc_block.modal.diameter_mode = int_value == 7; // TODO: find specs for implementation, only affects X calculation? reporting? current position?
                         } else
@@ -785,8 +971,8 @@ status_code_t gc_execute_block(char *block)
                         break;
 
                     case 33: case 76:
-                        if(!hal.spindle.get_data || (mantissa != 0))
-                            FAIL(Status_GcodeUnsupportedCommand); // [G33, G33.1 or G76 not supported]
+                        if(mantissa != 0)
+                            FAIL(Status_GcodeUnsupportedCommand); // [G33.1 not yet supported]
                         if (axis_command)
                             FAIL(Status_GcodeAxisCommandConflict); // [Axis word/command conflict]
                         axis_command = AxisCommand_MotionMode;
@@ -859,11 +1045,8 @@ status_code_t gc_execute_block(char *block)
                         break;
 
                     case 95:
-                        if(hal.spindle.get_data) {
-                            word_bit.modal_group.G5 = On;
-                            gc_block.modal.feed_mode = FeedMode_UnitsPerRev;
-                        } else
-                            FAIL(Status_GcodeUnsupportedCommand); // [G95 not supported]
+                        word_bit.modal_group.G5 = On;
+                        gc_block.modal.feed_mode = FeedMode_UnitsPerRev;
                         break;
 
                     case 20: case 21:
@@ -932,10 +1115,18 @@ status_code_t gc_execute_block(char *block)
                         gc_block.modal.control = ControlMode_PathBlending; // G64
                         break;
 */
+
+                    case 65: // NOTE: Mach 3/4 GCode
+                        word_bit.modal_group.G0 = On;
+                        gc_block.non_modal_command = (non_modal_t)int_value;
+                        if(mantissa != 0 || grbl.on_macro_execute == NULL)
+                            FAIL(Status_GcodeUnsupportedCommand);
+                        break;
+
                     case 96: case 97:
-                        if(sys.mode == Mode_Lathe && hal.spindle.cap.variable) {
+                        if(settings.mode == Mode_Lathe) {
                             word_bit.modal_group.G14 = On;
-                            gc_block.modal.spindle_rpm_mode = (spindle_rpm_mode_t)((int_value - 96) ^ 1);
+                            gc_block.modal.spindle.rpm_mode = (spindle_rpm_mode_t)((int_value - 96) ^ 1);
                         } else
                             FAIL(Status_GcodeUnsupportedCommand);
                         break;
@@ -967,7 +1158,18 @@ status_code_t gc_execute_block(char *block)
 
             case 'M': // Determine 'M' command and its modal group
 
-                if (mantissa > 0)
+                if(gc_block.non_modal_command == NonModal_MacroCall) {
+
+                    if(gc_block.words.m)
+                        FAIL(Status_GcodeWordRepeated); // [Word repeated]
+
+                    gc_block.values.m = value;
+                    gc_block.words.m = On; // Flag to indicate parameter assigned.
+
+                    continue;
+                }
+
+                if(mantissa > 0)
                     FAIL(Status_GcodeCommandValueNotInteger); // [No Mxx.x commands]
 
                 is_user_mcode = false;
@@ -995,9 +1197,9 @@ status_code_t gc_execute_block(char *block)
 
                     case 3: case 4: case 5:
                         word_bit.modal_group.M7 = On;
-                        gc_block.modal.spindle.on = !(int_value == 5);
-                        gc_block.modal.spindle.ccw = int_value == 4;
-                        sys.flags.delay_overrides = On;
+                        gc_block.modal.spindle.state.on = !(int_value == 5);
+                        gc_block.modal.spindle.state.ccw = int_value == 4;
+                        sys.override_delay.spindle = On;
                         break;
 
                     case 6:
@@ -1011,7 +1213,7 @@ status_code_t gc_execute_block(char *block)
 
                     case 7: case 8: case 9:
                         word_bit.modal_group.M8 = On;
-                        sys.flags.delay_overrides = On;
+                        sys.override_delay.coolant = On;
                         gc_parser_flags.set_coolant = On;
                         switch(int_value) {
 
@@ -1052,14 +1254,14 @@ status_code_t gc_execute_block(char *block)
                         if(hal.port.digital_out == NULL || hal.port.num_digital_out == 0)
                             FAIL(Status_GcodeUnsupportedCommand); // [Unsupported M command]
                         word_bit.modal_group.M10 = On;
-                        port_command = int_value;
+                        port_command = (io_mcode_t)int_value;
                         break;
 
                     case 66:
                         if(hal.port.wait_on_input == NULL || (hal.port.num_digital_in == 0 && hal.port.num_analog_in == 0))
                             FAIL(Status_GcodeUnsupportedCommand); // [Unsupported M command]
                         word_bit.modal_group.M10 = On;
-                        port_command = int_value;
+                        port_command = (io_mcode_t)int_value;
                         break;
 
                     case 67:
@@ -1067,7 +1269,7 @@ status_code_t gc_execute_block(char *block)
                         if(hal.port.analog_out == NULL || hal.port.num_analog_out == 0)
                             FAIL(Status_GcodeUnsupportedCommand); // [Unsupported M command]
                         word_bit.modal_group.M10 = On;
-                        port_command = int_value;
+                        port_command = (io_mcode_t)int_value;
                         break;
 /*
                     case 70:
@@ -1093,6 +1295,14 @@ status_code_t gc_execute_block(char *block)
                         }
                         return Status_OK;
 */
+
+                    case 99:
+                        word_bit.modal_group.M4 = On;
+                        gc_block.modal.program_flow = ProgramFlow_Return;
+                        if(grbl.on_macro_return == NULL)
+                            FAIL(Status_GcodeUnsupportedCommand);
+                        break;
+
                     default:
                         if(hal.user_mcode.check && (gc_block.user_mcode = hal.user_mcode.check((user_mcode_t)int_value))) {
                             is_user_mcode = true;
@@ -1438,38 +1648,61 @@ status_code_t gc_execute_block(char *block)
 
     // bit_false(gc_block.words,bit(Word_F)); // NOTE: Single-meaning value word. Set at end of error-checking.
 
-    // [4. Set spindle speed ]: S or D is negative (done.)
+    // [4. Set spindle speed and address spindle ]: S or D is negative (done.)
     if(gc_block.words.$) {
-        if(gc_block.values.$ < (command_words.M7 ? -1 : 0)) // if S word provided allow -1?
-            FAIL(command_words.M7 ? Status_GcodeValueOutOfRange: Status_NegativeValue);
-        if(gc_block.values.$ >= 1 /*spindle_get_count()*/)
-            FAIL(Status_GcodeValueOutOfRange);
-        gc_block.words.$ = Off;
-    }
+        bool single_spindle_only = (gc_block.words.s && !user_words.s) ||
+                                    (command_words.G0 && (gc_block.modal.motion == MotionMode_SpindleSynchronized ||
+                                                           gc_block.modal.motion == MotionMode_RigidTapping ||
+                                                            gc_block.modal.motion == MotionMode_Threading)) ||
+                                      command_words.G14 ||
+                                       (command_words.M9 && gc_block.override_command == Override_SpindleSpeed);
+        if(command_words.M7 || single_spindle_only) {
+            if(gc_block.values.$ < (single_spindle_only ? 0 : -1))
+                FAIL(single_spindle_only ? Status_NegativeValue : Status_GcodeValueOutOfRange);
+            if(!spindle_is_enabled(gc_block.values.$))
+                FAIL(Status_GcodeValueOutOfRange);
+            if(gc_block.values.$ >= 0)
+                gc_state.spindle.hal = gc_block.spindle = spindle_get(gc_block.values.$);
+            gc_block.words.$ = Off;
+        }
+    } else if(gc_block.spindle == NULL)
+        gc_block.spindle = gc_state.spindle.hal;
+
+    if(gc_block.modal.feed_mode == FeedMode_UnitsPerRev && !gc_state.spindle.hal->get_data)
+        FAIL(Status_GcodeUnsupportedCommand); // [G95 not supported]
 
     if (command_words.G14) {
-        if(gc_block.modal.spindle_rpm_mode == SpindleSpeedMode_CSS) {
+        if(gc_block.modal.spindle.rpm_mode == SpindleSpeedMode_CSS) {
+            if(!gc_state.spindle.hal->cap.variable)
+                FAIL(Status_GcodeUnsupportedCommand);
             if (!gc_block.words.s) // TODO: add check for S0?
                 FAIL(Status_GcodeValueWordMissing);
     // see below!! gc_block.values.s *= (gc_block.modal.units_imperial ? MM_PER_INCH * 12.0f : 1000.0f); // convert surface speed to mm/min
             if (gc_block.words.d) {
-                gc_state.spindle.css.max_rpm = min(gc_block.values.d, hal.spindle.rpm_max);
+                gc_state.spindle.hal->param->css.max_rpm = min(gc_block.values.d, gc_state.spindle.hal->rpm_max);
                 gc_block.words.d = Off;
             } else
-                gc_state.spindle.css.max_rpm = hal.spindle.rpm_max;
-        } else if(gc_state.modal.spindle_rpm_mode == SpindleSpeedMode_CSS)
-            gc_state.spindle.rpm = sys.spindle_rpm; // Is it correct to restore latest spindle RPM here?
-        gc_state.modal.spindle_rpm_mode = gc_block.modal.spindle_rpm_mode;
+                gc_state.spindle.hal->param->css.max_rpm = gc_state.spindle.hal->rpm_max;
+        } else if(gc_state.modal.spindle.rpm_mode == SpindleSpeedMode_CSS) {
+            if(gc_state.spindle.css) {
+                gc_state.spindle.css = NULL;
+                protocol_buffer_synchronize(); // Empty planner buffer to ensure we get RPM at end of last CSS motion
+            }
+            gc_state.spindle.rpm = gc_state.spindle.hal->param->rpm; // Is it correct to restore latest spindle RPM here?
+        }
+        gc_state.modal.spindle.rpm_mode = gc_block.modal.spindle.rpm_mode;
     }
 
     spindle_programmed = gc_block.words.s && !user_words.s;
 
     if (!gc_block.words.s)
-        gc_block.values.s = gc_state.modal.spindle_rpm_mode == SpindleSpeedMode_RPM ? gc_state.spindle.rpm : gc_state.spindle.css.surface_speed;
-    else if(!user_words.s && gc_state.modal.spindle_rpm_mode == SpindleSpeedMode_CSS)
+        gc_block.values.s = gc_state.modal.spindle.rpm_mode == SpindleSpeedMode_RPM ? gc_state.spindle.rpm : gc_state.spindle.hal->param->css.max_rpm;
+    else if(!user_words.s && gc_state.modal.spindle.rpm_mode == SpindleSpeedMode_CSS) {
         // Unsure what to do about S values when in SpindleSpeedMode_CSS - ignore? For now use it to (re)calculate surface speed.
         // Reinsert commented out code above if this is removed!!
         gc_block.values.s *= (gc_block.modal.units_imperial ? MM_PER_INCH * 12.0f : 1000.0f); // convert surface speed to mm/min
+        gc_state.spindle.hal->param->css.surface_speed = gc_block.values.s;
+    }
 
     // bit_false(gc_block.words,bit(Word_S)); // NOTE: Single-meaning value word. Set at end of error-checking.
 
@@ -1484,6 +1717,18 @@ status_code_t gc_execute_block(char *block)
 
         gc_block.values.t = (uint32_t)gc_block.values.q;
         gc_block.words.q = Off;
+#if NGC_EXPRESSIONS_ENABLE
+        if(hal.stream.file) {
+            gc_state.tool_pending = 0; // force set tool
+  #if N_TOOLS
+            if(gc_state.g43_pending) {
+                gc_block.values.h = gc_state.g43_pending;
+                command_words.G8 = On;
+            }
+            gc_state.g43_pending = 0;
+  #endif
+        }
+#endif
     } else if (!gc_block.words.t)
         gc_block.values.t = gc_state.tool_pending;
 
@@ -1491,10 +1736,10 @@ status_code_t gc_execute_block(char *block)
 
         switch(port_command) {
 
-            case 62:
-            case 63:
-            case 64:
-            case 65:
+            case IoMCode_OutputOnSynced:
+            case IoMCode_OutputOffSynced:
+            case IoMCode_OutputOnImmediate:
+            case IoMCode_OutputOffImmediate:
                 if(!gc_block.words.p)
                     FAIL(Status_GcodeValueWordMissing);
                 if(gc_block.values.p < 0.0f)
@@ -1507,7 +1752,7 @@ status_code_t gc_execute_block(char *block)
                 gc_block.words.p = Off;
                 break;
 
-            case 66:
+            case IoMCode_WaitOnInput:
                 if(!(gc_block.words.l || gc_block.words.q))
                     FAIL(Status_GcodeValueWordMissing);
 
@@ -1543,8 +1788,8 @@ status_code_t gc_execute_block(char *block)
                 gc_block.words.e = gc_block.words.l = gc_block.words.p = gc_block.words.q = Off;
                 break;
 
-            case 67:
-            case 68:
+            case IoMCode_AnalogOutSynced:
+            case IoMCode_AnalogOutImmediate:
                 if(!(gc_block.words.e || gc_block.words.q))
                     FAIL(Status_GcodeValueWordMissing);
                 if((uint32_t)gc_block.values.e + 1 > hal.port.num_analog_out)
@@ -1561,7 +1806,19 @@ status_code_t gc_execute_block(char *block)
 
     // [6. Change tool ]: N/A
 
-    // [7. Spindle control ]: N/A - spindle id validation taken care of above in step 4.
+    // [7. Spindle control ]:
+    if(command_words.M7 && gc_block.modal.spindle.state.ccw) {
+        // Check if spindle(s) support reversing direction
+        if(gc_block.spindle == NULL) {
+            uint_fast8_t idx = N_SYS_SPINDLE;
+            do {
+                idx--;
+                if(spindle_is_enabled(idx) && !(spindle_get(idx)->cap.direction || spindle_get(idx)->cap.laser))
+                    FAIL(Status_GcodeUnsupportedCommand);
+            } while(idx);
+        } else if(!(gc_block.spindle->cap.direction || gc_block.spindle->cap.laser))
+            FAIL(Status_GcodeUnsupportedCommand);
+    }
 
     // [8. Coolant control ]: N/A
 
@@ -1643,9 +1900,9 @@ status_code_t gc_execute_block(char *block)
             gc_block.values.xyz[idx] *= MM_PER_INCH;
     } while(idx);
 
-    if (command_words.G15) {
-        sys.report.xmode |= gc_state.modal.diameter_mode != gc_block.modal.diameter_mode;
+    if (command_words.G15 && gc_state.modal.diameter_mode != gc_block.modal.diameter_mode) {
         gc_state.modal.diameter_mode = gc_block.modal.diameter_mode;
+        system_add_rt_report(Report_LatheXMode);
     }
 
     if(gc_state.modal.diameter_mode && bit_istrue(axis_words.mask, bit(X_AXIS)))
@@ -1655,6 +1912,8 @@ status_code_t gc_execute_block(char *block)
     if(axis_command == AxisCommand_Scaling) {
 
         if(gc_block.modal.scaling_active) {
+
+            bool report_scaling = false;
 
             // TODO: precheck for 0.0f and fail if found?
 
@@ -1668,9 +1927,10 @@ status_code_t gc_execute_block(char *block)
             idx = N_AXIS;
             do {
                 if(bit_istrue(axis_words.mask, bit(--idx))) {
-                    sys.report.scaling = sys.report.scaling || scale_factor.ijk[idx] != gc_block.values.xyz[idx];
+                    report_scaling |= scale_factor.ijk[idx] != gc_block.values.xyz[idx];
                     scale_factor.ijk[idx] = gc_block.values.xyz[idx];
                     bit_false(axis_words.mask, bit(idx));
+                    system_add_rt_report(Report_Scaling);
                 }
                 gc_block.modal.scaling_active = gc_block.modal.scaling_active || (scale_factor.xyz[idx] != 1.0f);
             } while(idx);
@@ -1694,10 +1954,10 @@ status_code_t gc_execute_block(char *block)
             do {
                 idx--;
                 if(gc_block.words.p) {
-                    sys.report.scaling = sys.report.scaling || scale_factor.ijk[idx] != gc_block.values.p;
+                    report_scaling |= scale_factor.ijk[idx] != gc_block.values.p;
                     scale_factor.ijk[idx] = gc_block.values.p;
                 } else if(bit_istrue(ijk_words.mask, bit(idx))) {
-                    sys.report.scaling = sys.report.scaling || scale_factor.ijk[idx] != gc_block.values.ijk[idx];
+                    report_scaling |= scale_factor.ijk[idx] != gc_block.values.ijk[idx];
                     scale_factor.ijk[idx] = gc_block.values.ijk[idx];
                 }
                 gc_block.modal.scaling_active = gc_block.modal.scaling_active || (scale_factor.ijk[idx] != 1.0f);
@@ -1708,8 +1968,11 @@ status_code_t gc_execute_block(char *block)
             else
                 gc_block.words.i = gc_block.words.j = gc_block.words.k = Off;
 #endif
-            sys.report.scaling = sys.report.scaling || gc_state.modal.scaling_active != gc_block.modal.scaling_active;
+            report_scaling |= gc_state.modal.scaling_active != gc_block.modal.scaling_active;
             gc_state.modal.scaling_active = gc_block.modal.scaling_active;
+
+            if(report_scaling)
+                system_add_rt_report(Report_Scaling);
 
         } else
             set_scaling(1.0f);
@@ -1848,6 +2111,13 @@ status_code_t gc_execute_block(char *block)
                     if (!settings_read_coord_data(gc_block.values.coord_data.id, &gc_block.values.coord_data.xyz))
                         FAIL(Status_SettingReadFail); // [non-volatile storage read fail]
 
+#if COMPATIBILITY_LEVEL <= 1
+                    if(settings.parking.flags.offset_lock && gc_block.values.coord_data.id >= CoordinateSystem_G59_1 && gc_block.values.coord_data.id <= CoordinateSystem_G59_3) {
+                        if(bit_istrue(settings.parking.flags.offset_lock, bit(gc_block.values.coord_data.id - CoordinateSystem_G59_1)))
+                            FAIL(Status_GCodeCoordSystemLocked);
+                    }
+#endif
+
                     // Pre-calculate the coordinate data changes.
                     idx = N_AXIS;
                     do { // Axes indices are consistent, so loop may be used.
@@ -1868,7 +2138,7 @@ status_code_t gc_execute_block(char *block)
                     if(p_value == 0 || p_value > MAX_TOOL_NUMBER)
                        FAIL(Status_GcodeIllegalToolTableEntry); // [Greater than MAX_TOOL_NUMBER]
 
-                    tool_table[p_value].tool = p_value;
+                    tool_table[p_value].tool_id = (tool_id_t)p_value;
 
                     if(gc_block.words.r) {
                         tool_table[p_value].radius = gc_block.values.r;
@@ -1879,18 +2149,23 @@ status_code_t gc_execute_block(char *block)
                     if(gc_block.values.l == 11 && !settings_read_coord_data(CoordinateSystem_G59_3, &g59_3_offset))
                         FAIL(Status_SettingReadFail);
 
+                    if(gc_block.values.l == 1)
+                        settings_read_tool_data(p_value, &tool_table[p_value]);
+
                     idx = N_AXIS;
                     do {
-                        if (bit_istrue(axis_words.mask, bit(--idx))) {
+                        if(bit_istrue(axis_words.mask, bit(--idx))) {
                             if(gc_block.values.l == 1)
                                 tool_table[p_value].offset[idx] = gc_block.values.xyz[idx];
                             else if(gc_block.values.l == 10)
-                                tool_table[p_value].offset[idx] = gc_state.position[idx] - gc_state.g92_coord_offset[idx] - gc_block.values.xyz[idx];
+                                tool_table[p_value].offset[idx] = gc_state.position[idx] - gc_state.modal.coord_system.xyz[idx] - gc_state.g92_coord_offset[idx] - gc_block.values.xyz[idx];
                             else if(gc_block.values.l == 11)
                                 tool_table[p_value].offset[idx] = g59_3_offset[idx] - gc_block.values.xyz[idx];
-                            if (gc_block.values.l != 1)
-                                tool_table[p_value].offset[idx] -= gc_state.tool_length_offset[idx];
-                        }
+//                            if(gc_block.values.l != 1)
+//                                tool_table[p_value].offset[idx] -= gc_state.tool_length_offset[idx];
+                        } else if(gc_block.values.l == 10 || gc_block.values.l == 11)
+                            tool_table[p_value].offset[idx] = gc_state.tool_length_offset[idx];
+
                         // else, keep current stored value.
                     } while(idx);
 
@@ -1985,6 +2260,41 @@ status_code_t gc_execute_block(char *block)
                         FAIL(Status_GcodeG53InvalidMotionMode); // [G53 G0/1 not active]
                     break;
 
+                case NonModal_MacroCall:
+                    if(!gc_block.words.p)
+                        FAIL(Status_GcodeValueWordMissing); // [P word missing]
+                    if(gc_block.values.p > 65535.0f)
+                        FAIL(Status_GcodeValueOutOfRange); // [P word out of range]
+#if NGC_EXPRESSIONS_ENABLE
+                    // TODO: add context for local storage?
+                    {
+                        uint_fast8_t idx = 1;
+
+                        axis_words.mask = 0;
+                        gc_block.words.p = Off;
+                        gc_block.words.value >>= 1;
+
+                        while(gc_block.words.value) {
+                            if(gc_block.words.value & 0x1 && gc_value_ptr[idx].value) switch(gc_value_ptr[idx].type) {
+                                case ValueType_Float:
+                                    ngc_param_set((ngc_param_id_t)idx, *(float *)gc_value_ptr[idx].value);
+                                    break;
+
+                                case ValueType_UInt32:
+                                    ngc_param_set((ngc_param_id_t)idx, (float)*(uint32_t *)gc_value_ptr[idx].value);
+                                    break;
+
+                                default:
+                                    break;
+                            }
+                            idx++;
+                            gc_block.words.value >>= 1;
+                        }
+                    }
+#else
+                    gc_block.words.p = Off;
+#endif
+                    break;
                 default:
                     break;
             }
@@ -2020,11 +2330,14 @@ status_code_t gc_execute_block(char *block)
                 gc_block.modal.retract_mode = CCRetractMode_Previous;
 
             // Initial(?) check for spindle running for moves in G96 mode
-            if(gc_block.modal.spindle_rpm_mode == SpindleSpeedMode_CSS && (!gc_block.modal.spindle.on || gc_block.values.s == 0.0f))
+            if(gc_block.modal.spindle.rpm_mode == SpindleSpeedMode_CSS && (!gc_block.modal.spindle.state.on || gc_block.values.s == 0.0f))
                  FAIL(Status_GcodeSpindleNotRunning);
 
             // Check if feed rate is defined for the motion modes that require it.
             if (gc_block.modal.motion == MotionMode_SpindleSynchronized) {
+
+                if(!gc_state.spindle.hal->get_data)
+                    FAIL(Status_GcodeUnsupportedCommand); // [G33, G33.1]
 
                 if(gc_block.values.k == 0.0f)
                     FAIL(Status_GcodeValueOutOfRange); // [No distance (pitch) given]
@@ -2035,6 +2348,9 @@ status_code_t gc_execute_block(char *block)
             } else if (gc_block.modal.motion == MotionMode_Threading) {
 
                 // Fail if cutter radius comp is active
+
+                if(!gc_state.spindle.hal->get_data)
+                    FAIL(Status_GcodeUnsupportedCommand); // [G76 not supported]
 
                 if(gc_block.modal.plane_select != PlaneSelect_ZX)
                     FAIL(Status_GcodeIllegalPlane); // [Plane not ZX]
@@ -2057,7 +2373,7 @@ status_code_t gc_execute_block(char *block)
                       (gc_block.words.l && (gc_taper_type)gc_block.values.l > Taper_Both))
                     FAIL(Status_GcodeValueOutOfRange);
 
-                if(gc_state.spindle.rpm < hal.spindle.rpm_min || gc_state.spindle.rpm > hal.spindle.rpm_max)
+                if(gc_state.spindle.rpm < gc_state.spindle.hal->rpm_min || gc_state.spindle.rpm > gc_state.spindle.hal->rpm_max)
                     FAIL(Status_GcodeRPMOutOfRange);
 
                 if(gc_block.modal.motion != gc_state.modal.motion) {
@@ -2325,7 +2641,7 @@ status_code_t gc_execute_block(char *block)
                         float h_x2_div_d = 4.0f * gc_block.values.r * gc_block.values.r - x * x - y * y;
 
                         if (h_x2_div_d < 0.0f)
-                            FAIL(Status_GcodeArcRadiusError); // [Arc radius error]
+                            FAIL(Status_GcodeArcRadiusError); // [Arc radius error] TODO: this will fail due to limited float precision...
 
                         // Finish computing h_x2_div_d.
                         h_x2_div_d = -sqrtf(h_x2_div_d) / hypot_f(x, y); // == -(h * 2 / d)
@@ -2536,6 +2852,7 @@ status_code_t gc_execute_block(char *block)
     // Initialize planner data struct for motion blocks.
     plan_line_data_t plan_data;
     memset(&plan_data, 0, sizeof(plan_line_data_t)); // Zero plan_data struct
+    plan_data.condition.target_validated = plan_data.condition.target_valid = sys.soft_limits.mask == 0;
 
     // Intercept jog commands and complete error checking for valid jog commands and execute.
     // NOTE: G-code parser state is not updated, except the position to ensure sequential jog
@@ -2553,18 +2870,18 @@ status_code_t gc_execute_block(char *block)
 
         // Initialize planner data to current spindle and coolant modal state.
         memcpy(&plan_data.spindle, &gc_state.spindle, sizeof(spindle_t));
-        plan_data.condition.spindle = gc_state.modal.spindle;
+        plan_data.spindle.state = gc_state.modal.spindle.state;
         plan_data.condition.coolant = gc_state.modal.coolant;
-        plan_data.condition.is_rpm_rate_adjusted = gc_state.is_rpm_rate_adjusted || (gc_state.modal.spindle.ccw && sys.mode == Mode_Laser);
+        plan_data.condition.is_rpm_rate_adjusted = gc_state.is_rpm_rate_adjusted || (gc_state.modal.spindle.state.ccw && gc_state.spindle.hal->cap.laser);
 
-        if ((status_code_t)(int_value = (uint_fast16_t)mc_jog_execute(&plan_data, &gc_block)) == Status_OK)
+        if ((status_code_t)(int_value = (uint_fast16_t)mc_jog_execute(&plan_data, &gc_block, gc_state.position)) == Status_OK)
             memcpy(gc_state.position, gc_block.values.xyz, sizeof(gc_state.position));
 
         return (status_code_t)int_value;
     }
 
     // If in laser mode, setup laser power based on current and past parser conditions.
-    if(sys.mode == Mode_Laser) {
+    if(gc_state.spindle.hal->cap.laser) {
 
         if(!motion_is_lasercut(gc_block.modal.motion))
             gc_parser_flags.laser_disable = On;
@@ -2574,7 +2891,7 @@ status_code_t gc_execute_block(char *block)
         // TODO: Check sync conditions for M3 enabled motions that don't enter the planner. (zero length).
         if(axis_words.mask && (axis_command == AxisCommand_MotionMode))
             gc_parser_flags.laser_is_motion = On;
-        else if(gc_state.modal.spindle.on && !gc_state.modal.spindle.ccw) {
+        else if(gc_state.modal.spindle.state.on && !gc_state.modal.spindle.state.ccw) {
             // M3 constant power laser requires planner syncs to update the laser when changing between
             // a G1/2/3 motion mode state and vice versa when there is no motion in the line.
             if(motion_is_lasercut(gc_state.modal.motion)) {
@@ -2584,7 +2901,7 @@ status_code_t gc_execute_block(char *block)
                 gc_parser_flags.spindle_force_sync = On;
         }
 
-        gc_state.is_rpm_rate_adjusted = gc_state.modal.spindle.ccw && !gc_parser_flags.laser_disable;
+        gc_state.is_rpm_rate_adjusted = gc_state.modal.spindle.state.ccw && !gc_parser_flags.laser_disable;
     }
 
     // [0. Non-specific/common error-checks and miscellaneous setup]:
@@ -2608,60 +2925,73 @@ status_code_t gc_execute_block(char *block)
     plan_data.feed_rate = gc_state.feed_rate; // Record data for planner use.
 
     // [4. Set spindle speed ]:
-    if(gc_state.modal.spindle_rpm_mode == SpindleSpeedMode_CSS) {
-        if(!user_words.s)
-            gc_state.spindle.css.surface_speed = gc_block.values.s;
-        if((plan_data.condition.is_rpm_pos_adjusted = gc_block.modal.motion != MotionMode_None && gc_block.modal.motion != MotionMode_Seek)) {
-            gc_state.spindle.css.active = true;
-            gc_state.spindle.css.axis = plane.axis_1;
-            gc_state.spindle.css.tool_offset = gc_get_offset(gc_state.spindle.css.axis);
-            float pos = gc_state.position[gc_state.spindle.css.axis] - gc_state.spindle.css.tool_offset;
-            gc_block.values.s = pos <= 0.0f ? gc_state.spindle.css.max_rpm : min(gc_state.spindle.css.max_rpm, gc_state.spindle.css.surface_speed / (pos * (float)(2.0f * M_PI)));
+    if(gc_state.modal.spindle.rpm_mode == SpindleSpeedMode_CSS) {
+        if(gc_block.modal.motion != MotionMode_None && gc_block.modal.motion != MotionMode_Seek) {
+            gc_state.spindle.css = &gc_state.spindle.hal->param->css;
+            gc_state.spindle.css->axis = plane.axis_1;
+            gc_state.spindle.css->tool_offset = gc_get_offset(gc_state.spindle.css->axis);
+            float pos = gc_state.position[gc_state.spindle.css->axis] - gc_state.spindle.css->tool_offset;
+            gc_block.values.s = pos <= 0.0f ? gc_state.spindle.css->max_rpm : min(gc_state.spindle.css->max_rpm, gc_state.spindle.css->surface_speed / (pos * (float)(2.0f * M_PI)));
             gc_parser_flags.spindle_force_sync = On;
         } else {
-            if(gc_state.spindle.css.active) {
-                gc_state.spindle.css.active = false;
+            if(gc_state.spindle.css) {
+                gc_state.spindle.css = NULL;
                 protocol_buffer_synchronize(); // Empty planner buffer to ensure we get RPM at end of last CSS motion
             }
-            gc_block.values.s = sys.spindle_rpm; // Keep current RPM
+            gc_block.values.s = gc_state.spindle.rpm; //gc_state.spindle.hal->param->rpm; // Keep current RPM
         }
     }
 
-    if (!user_words.s && ((gc_state.spindle.rpm != gc_block.values.s) || gc_parser_flags.spindle_force_sync)) {
-        if (gc_state.modal.spindle.on && !gc_parser_flags.laser_is_motion)
-            spindle_sync(0, gc_state.modal.spindle, gc_parser_flags.laser_disable ? 0.0f : gc_block.values.s);
+    if(!user_words.s && ((gc_state.spindle.rpm != gc_block.values.s) || gc_parser_flags.spindle_force_sync)) {
+        if(gc_state.modal.spindle.state.on && !gc_parser_flags.laser_is_motion) {
+            if(gc_block.spindle) {
+                gc_block.spindle->param->rpm = gc_block.values.s;
+                spindle_sync(gc_block.spindle, gc_state.modal.spindle.state, gc_parser_flags.laser_disable ? 0.0f : gc_block.values.s);
+            }
+            // else... - setting the same rpm for multiple spindles at once is not allowed!
+        }
         gc_state.spindle.rpm = gc_block.values.s; // Update spindle speed state.
     }
 
     // NOTE: Pass zero spindle speed for all restricted laser motions.
     if (!gc_parser_flags.laser_disable)
         memcpy(&plan_data.spindle, &gc_state.spindle, sizeof(spindle_t)); // Record data for planner use.
-    // else { plan_data.spindle.speed = 0.0; } // Initialized as zero already.
+    else {
+        plan_data.spindle.hal = gc_state.spindle.hal;
+    //  plan_data.spindle.speed = 0.0f; // Initialized as zero already.
+    }
 
     // [5. Select tool ]: Only tracks tool value if ATC or manual tool change is not possible.
     if(gc_state.tool_pending != gc_block.values.t && !check_mode) {
 
-        gc_state.tool_pending = gc_block.values.t;
+        tool_data_t *pending_tool = tool_get_pending((gc_state.tool_pending = gc_block.values.t));
 
         // If M6 not available or M61 commanded set new tool immediately
         if(set_tool || settings.tool_change.mode == ToolChange_Ignore || !(hal.stream.suspend_read || hal.tool.change)) {
-#if N_TOOLS
-            gc_state.tool = &tool_table[gc_state.tool_pending];
-#else
-            gc_state.tool->tool = gc_state.tool_pending;
-#endif
-            sys.report.tool = On;
+
+            tool_set(pending_tool);
+
+            if(grbl.on_tool_selected) {
+
+                spindle_state_t state = gc_state.modal.spindle.state;
+
+                grbl.on_tool_selected(gc_state.tool);
+
+                if(state.value != gc_state.modal.spindle.state.value)
+                    gc_block.modal.spindle.state = gc_state.modal.spindle.state;
+            }
+
+            if(grbl.on_tool_changed)
+                grbl.on_tool_changed(gc_state.tool);
+
+            system_add_rt_report(Report_Tool);
         }
 
         // Prepare tool carousel when available
-        if(hal.tool.select) {
-#if N_TOOLS
-            hal.tool.select(&tool_table[gc_state.tool_pending], !set_tool);
-#else
-            hal.tool.select(gc_state.tool, !set_tool);
-#endif
-        } else
-            sys.report.tool = On;
+        if(hal.tool.select)
+            hal.tool.select(pending_tool, !set_tool);
+        else
+            system_add_rt_report(Report_Tool);
     }
 
     // [5a. HAL pin I/O ]: M62 - M68. (Modal group M10)
@@ -2670,26 +3000,26 @@ status_code_t gc_execute_block(char *block)
 
         switch(port_command) {
 
-            case 62:
-            case 63:
+            case IoMCode_OutputOnSynced:
+            case IoMCode_OutputOffSynced:
                 add_output_command(&gc_block.output_command);
                 break;
 
-            case 64:
-            case 65:
+            case IoMCode_OutputOnImmediate:
+            case IoMCode_OutputOffImmediate:
                 hal.port.digital_out(gc_block.output_command.port, gc_block.output_command.value != 0.0f);
                 break;
 
-            case 66:
+            case IoMCode_WaitOnInput:
                 sys.var5399 = hal.port.wait_on_input((io_port_type_t)gc_block.output_command.is_digital, gc_block.output_command.port, (wait_mode_t)gc_block.values.l, gc_block.values.q);
-                sys.report.m66result = On;
+                system_add_rt_report(Report_M66Result);
                 break;
 
-            case 67:
+            case IoMCode_AnalogOutSynced:
                 add_output_command(&gc_block.output_command);
                 break;
 
-            case 68:
+            case IoMCode_AnalogOutImmediate:
                 hal.port.analog_out(gc_block.output_command.port, gc_block.output_command.value);
                 break;
         }
@@ -2698,45 +3028,89 @@ status_code_t gc_execute_block(char *block)
     // [6. Change tool ]: Delegated to (possible) driver implementation
     if (command_words.M6 && !set_tool && !check_mode) {
 
+        tool_data_t *pending_tool = tool_get_pending(gc_state.tool_pending);
+
         protocol_buffer_synchronize();
 
         if(plan_data.message) {
-            report_message(plan_data.message, Message_Plain);
-            free(plan_data.message);
+            output_message(plan_data.message);
             plan_data.message = NULL;
         }
 
-#if N_TOOLS
-        gc_state.tool = &tool_table[gc_state.tool_pending];
-#else
-        gc_state.tool->tool = gc_state.tool_pending;
+        if(pending_tool->tool_id != gc_state.tool->tool_id) {
+
+            if(grbl.on_tool_selected) {
+
+                spindle_state_t state = gc_state.modal.spindle.state;
+
+                grbl.on_tool_selected(pending_tool);
+
+                if(state.value != gc_state.modal.spindle.state.value)
+                    gc_block.modal.spindle.state = gc_state.modal.spindle.state;
+            }
+
+            if(hal.tool.change) { // ATC
+                if((int_value = (uint_fast16_t)hal.tool.change(&gc_state)) != Status_OK) {
+#if NGC_EXPRESSIONS_ENABLE
+                    if(int_value != Status_Unhandled)
 #endif
-        if(hal.tool.change) { // ATC
-            if((int_value = (uint_fast16_t)hal.tool.change(&gc_state)) != Status_OK)
-                FAIL((status_code_t)int_value);
-            sys.report.tool = On;
-        } else { // Manual
-            gc_state.tool_change = true;
-            system_set_exec_state_flag(EXEC_TOOL_CHANGE);   // Set up program pause for manual tool change
-            protocol_execute_realtime();                    // Execute...
+                        FAIL((status_code_t)int_value);
+                }
+                system_add_rt_report(Report_Tool);
+            } else { // Manual
+                int_value = (uint_fast16_t)Status_OK;
+                gc_state.tool_change = true;
+                system_set_exec_state_flag(EXEC_TOOL_CHANGE);   // Set up program pause for manual tool change
+                protocol_execute_realtime();                    // Execute...
+            }
+#if NGC_EXPRESSIONS_ENABLE
+            if((status_code_t)int_value != Status_Unhandled)
+                tool_set(pending_tool);
+  #if N_TOOLS
+            else if(command_words.G8 && gc_block.modal.tool_offset_mode && ToolLengthOffset_Enable) {
+                gc_state.g43_pending = gc_block.values.h;
+                command_words.G8 = Off;
+            }
+  #endif
+#else
+            tool_set(pending_tool);
+#endif
+            if(grbl.on_tool_changed && state_get() != STATE_TOOL_CHANGE)
+                grbl.on_tool_changed(gc_state.tool);
         }
     }
 
     // [7. Spindle control ]:
-    if (gc_state.modal.spindle.value != gc_block.modal.spindle.value) {
+    if (gc_state.modal.spindle.state.value != gc_block.modal.spindle.state.value) {
         // Update spindle control and apply spindle speed when enabling it in this block.
         // NOTE: All spindle state changes are synced, even in laser mode. Also, plan_data,
         // rather than gc_state, is used to manage laser state for non-laser motions.
-        if((spindle_programmed = spindle_sync(0, gc_block.modal.spindle, plan_data.spindle.rpm)))
-            gc_state.modal.spindle = gc_block.modal.spindle;
+        if(gc_block.spindle) {
+            if((spindle_programmed = spindle_sync(gc_block.spindle, gc_block.modal.spindle.state, plan_data.spindle.rpm)))
+                gc_block.spindle->param->state = gc_block.modal.spindle.state;
+        } else {
+            idx = N_SYS_SPINDLE;
+            do {
+                if(spindle_is_enabled(--idx)) {
+                    spindle_ptrs_t *spindle = spindle_get(idx);
+                    if(spindle_sync(spindle, gc_block.modal.spindle.state, plan_data.spindle.rpm)) {
+                        spindle_programmed = true;
+                        spindle->param->state = gc_block.modal.spindle.state;
+                    }
+                }
+            } while(idx);
+        }
+        if(spindle_programmed)
+            gc_state.modal.spindle.state = gc_block.modal.spindle.state;
     }
 
+    // TODO: add spindle argument and move into loop above?
     if(spindle_programmed && grbl.on_spindle_programmed)
-        grbl.on_spindle_programmed(gc_state.modal.spindle, gc_state.spindle.rpm, gc_state.modal.spindle_rpm_mode);
+        grbl.on_spindle_programmed(gc_state.spindle.hal, gc_state.modal.spindle.state, gc_state.spindle.rpm, gc_state.modal.spindle.rpm_mode);
 
-// TODO: Recheck spindle running in CCS mode (is_rpm_pos_adjusted = On)?
+// TODO: Recheck spindle running in CCS mode (is_rpm_pos_adjusted == On)?
 
-    plan_data.condition.spindle = gc_state.modal.spindle; // Set condition flag for planner use.
+    plan_data.spindle.state = gc_state.modal.spindle.state; // Set condition flag for planner use.
     plan_data.condition.is_rpm_rate_adjusted = gc_state.is_rpm_rate_adjusted;
     plan_data.condition.is_laser_ppi_mode = gc_state.is_rpm_rate_adjusted && gc_state.is_laser_ppi_mode;
 
@@ -2750,17 +3124,19 @@ status_code_t gc_execute_block(char *block)
 
     plan_data.condition.coolant = gc_state.modal.coolant; // Set condition flag for planner use.
 
-    sys.flags.delay_overrides = Off;
+    sys.override_delay.flags = 0;
 
     // [9. Override control ]:
     if (gc_state.modal.override_ctrl.value != gc_block.modal.override_ctrl.value) {
+
         gc_state.modal.override_ctrl = gc_block.modal.override_ctrl;
+        gc_state.modal.spindle.state.override_disable = gc_state.spindle.hal->param->state.override_disable = gc_state.modal.override_ctrl.spindle_rpm_disable;
 
         if(gc_state.modal.override_ctrl.feed_rate_disable)
             plan_feed_override(0, 0);
 
         if(gc_state.modal.override_ctrl.spindle_rpm_disable)
-            spindle_set_override(DEFAULT_SPINDLE_RPM_OVERRIDE);
+            spindle_set_override(gc_state.spindle.hal, DEFAULT_SPINDLE_RPM_OVERRIDE);
 
         mc_override_ctrl_update(gc_state.modal.override_ctrl); // NOTE: must be called last!
     }
@@ -2835,7 +3211,7 @@ status_code_t gc_execute_block(char *block)
         } while(idx);
 
         if(tlo_changed) {
-            sys.report.tool_offset = true;
+            system_add_rt_report(Report_ToolOffset);
             system_flag_wco_change();
         }
     }
@@ -2843,7 +3219,7 @@ status_code_t gc_execute_block(char *block)
     // [15. Coordinate system selection ]:
     if (gc_state.modal.coord_system.id != gc_block.modal.coord_system.id) {
         memcpy(&gc_state.modal.coord_system, &gc_block.modal.coord_system, sizeof(gc_state.modal.coord_system));
-        sys.report.gwco = On;
+        system_add_rt_report(Report_GWCO);
         system_flag_wco_change();
     }
 
@@ -2860,12 +3236,18 @@ status_code_t gc_execute_block(char *block)
     switch(gc_block.non_modal_command) {
 
         case NonModal_SetCoordinateData:
-            settings_write_coord_data(gc_block.values.coord_data.id, &gc_block.values.coord_data.xyz);
-            // Update system coordinate system if currently active.
-            if (gc_state.modal.coord_system.id == gc_block.values.coord_data.id) {
-                memcpy(gc_state.modal.coord_system.xyz, gc_block.values.coord_data.xyz, sizeof(gc_state.modal.coord_system.xyz));
-                system_flag_wco_change();
+#if N_TOOLS
+            if(gc_block.values.l == 2 || gc_block.values.l == 20) {
+#endif
+                settings_write_coord_data(gc_block.values.coord_data.id, &gc_block.values.coord_data.xyz);
+                // Update system coordinate system if currently active.
+                if (gc_state.modal.coord_system.id == gc_block.values.coord_data.id) {
+                    memcpy(gc_state.modal.coord_system.xyz, gc_block.values.coord_data.xyz, sizeof(gc_state.modal.coord_system.xyz));
+                    system_flag_wco_change();
+                }
+#if N_TOOLS
             }
+#endif
             break;
 
         case NonModal_GoHome_0:
@@ -2886,6 +3268,18 @@ status_code_t gc_execute_block(char *block)
 
         case NonModal_SetHome_1:
             settings_write_coord_data(CoordinateSystem_G30, &gc_state.position);
+            break;
+
+        case NonModal_MacroCall:
+            {
+#if NGC_EXPRESSIONS_ENABLE
+                ngc_named_param_set("_value", 0.0f);
+                ngc_named_param_set("_value_returned", 0.0f);
+#endif
+                status_code_t status = grbl.on_macro_execute((macro_id_t)gc_block.values.p);
+
+                return status == Status_Unhandled ? Status_GcodeValueOutOfRange : status;
+            }
             break;
 
         case NonModal_SetCoordinateOffset: // G92
@@ -2937,7 +3331,7 @@ status_code_t gc_execute_block(char *block)
 
             case MotionMode_Linear:
                 if(gc_state.modal.feed_mode == FeedMode_UnitsPerRev) {
-                    plan_data.condition.spindle.synchronized = On;
+                    plan_data.spindle.state.synchronized = On;
                 //??    gc_state.distance_per_rev = plan_data.feed_rate;
                     // check initial feed rate - fail if zero?
                 }
@@ -2953,16 +3347,16 @@ status_code_t gc_execute_block(char *block)
             case MotionMode_CcwArc:
                 // fail if spindle synchronized motion?
                 mc_arc(gc_block.values.xyz, &plan_data, gc_state.position, gc_block.values.ijk, gc_block.values.r,
-                        plane, gc_parser_flags.arc_is_clockwise ? gc_block.arc_turns : - gc_block.arc_turns);
+                        plane, gc_parser_flags.arc_is_clockwise ? -gc_block.arc_turns : gc_block.arc_turns);
                 break;
 
             case MotionMode_CubicSpline:
                 {
-                    point_2d cp1 = {
+                    point_2d_t cp1 = {
                         .x = gc_state.position[X_AXIS] + gc_block.values.ijk[X_AXIS],
                         .y = gc_state.position[Y_AXIS] + gc_block.values.ijk[Y_AXIS]
                     };
-                    point_2d cp2 = {
+                    point_2d_t cp2 = {
                         .x = gc_block.values.xyz[X_AXIS] + gc_state.modal.spline_pq[X_AXIS],
                         .y = gc_block.values.xyz[Y_AXIS] + gc_state.modal.spline_pq[Y_AXIS]
                     };
@@ -2972,11 +3366,11 @@ status_code_t gc_execute_block(char *block)
 
             case MotionMode_QuadraticSpline:
                 {
-                    point_2d cp1 = {
+                    point_2d_t cp1 = {
                         .x = gc_state.position[X_AXIS] + (gc_block.values.ijk[X_AXIS] * 2.0f) / 3.0f,
                         .y = gc_state.position[Y_AXIS] + (gc_block.values.ijk[Y_AXIS] * 2.0f) / 3.0f
                     };
-                    point_2d cp2 = {
+                    point_2d_t cp2 = {
                         .x = gc_block.values.xyz[X_AXIS] + ((gc_state.position[X_AXIS] + gc_block.values.ijk[X_AXIS] - gc_block.values.xyz[X_AXIS]) * 2.0f) / 3.0f,
                         .y = gc_block.values.xyz[Y_AXIS] + ((gc_state.position[Y_AXIS] + gc_block.values.ijk[Y_AXIS] - gc_block.values.xyz[Y_AXIS]) * 2.0f) / 3.0f
                     };
@@ -2994,7 +3388,7 @@ status_code_t gc_execute_block(char *block)
                     if(status != Status_OK)
                         FAIL(status);
 
-                    plan_data.condition.spindle.synchronized = On;
+                    plan_data.spindle.state.synchronized = On;
 
                     mc_line(gc_block.values.xyz, &plan_data);
 
@@ -3063,22 +3457,23 @@ status_code_t gc_execute_block(char *block)
         // == GCUpdatePos_None
     }
 
-    if(plan_data.message) {
-        report_message(plan_data.message, Message_Plain);
-        free(plan_data.message);
-    }
+    if(plan_data.message)
+        output_message(plan_data.message);
 
     // [21. Program flow ]:
     // M0,M1,M2,M30,M60: Perform non-running program flow actions. During a program pause, the buffer may
     // refill and can only be resumed by the cycle start run-time command.
     gc_state.modal.program_flow = gc_block.modal.program_flow;
 
-    if (gc_state.modal.program_flow || sys.flags.single_block) {
+    if(gc_state.modal.program_flow || sys.flags.single_block) {
 
         protocol_buffer_synchronize(); // Sync and finish all remaining buffered motions before moving on.
 
-        if (gc_state.modal.program_flow == ProgramFlow_Paused || gc_block.modal.program_flow == ProgramFlow_OptionalStop || gc_block.modal.program_flow == ProgramFlow_CompletedM60 || sys.flags.single_block) {
-            if (!check_mode) {
+        if(gc_state.modal.program_flow == ProgramFlow_Return) {
+            if(grbl.on_macro_return)
+                grbl.on_macro_return();
+        } else if(gc_state.modal.program_flow == ProgramFlow_Paused || gc_block.modal.program_flow == ProgramFlow_OptionalStop || gc_block.modal.program_flow == ProgramFlow_CompletedM60 || sys.flags.single_block) {
+            if(!check_mode) {
                 if(gc_block.modal.program_flow == ProgramFlow_CompletedM60 && hal.pallet_shuttle)
                     hal.pallet_shuttle();
                 system_set_exec_state_flag(EXEC_FEED_HOLD); // Use feed hold for program pause.
@@ -3098,17 +3493,30 @@ status_code_t gc_execute_block(char *block)
             gc_block.modal.canned_cycle_active = false;
             gc_state.modal.plane_select = PlaneSelect_XY;
 //            gc_state.modal.plane_select = settings.flags.lathe_mode ? PlaneSelect_ZX : PlaneSelect_XY;
-            gc_state.modal.spindle_rpm_mode = SpindleSpeedMode_RPM; // NOTE: not compliant with linuxcnc (?)
+            gc_state.modal.spindle.rpm_mode = SpindleSpeedMode_RPM; // NOTE: not compliant with linuxcnc (?)
             gc_state.modal.distance_incremental = false;
             gc_state.modal.feed_mode = FeedMode_UnitsPerMin;
 // TODO: check           gc_state.distance_per_rev = 0.0f;
             // gc_state.modal.cutter_comp = CUTTER_COMP_DISABLE; // Not supported.
-            if((sys.report.gwco = gc_state.modal.coord_system.id != CoordinateSystem_G54))
+            if(gc_state.modal.coord_system.id != CoordinateSystem_G54) {
                 gc_state.modal.coord_system.id = CoordinateSystem_G54;
-            gc_state.modal.spindle = (spindle_state_t){0};
+                system_add_rt_report(Report_GWCO);
+            }
+            gc_state.modal.spindle.state = (spindle_state_t){0};
             gc_state.modal.coolant = (coolant_state_t){0};
             gc_state.modal.override_ctrl.feed_rate_disable = Off;
             gc_state.modal.override_ctrl.spindle_rpm_disable = Off;
+
+            idx = N_SYS_SPINDLE;
+            spindle_ptrs_t *spindle;
+            do {
+                if((spindle = spindle_get(--idx))) {
+                    spindle->param->state.override_disable = Off;
+                    if(settings.flags.restore_overrides)
+                        spindle->param->override_pct = DEFAULT_SPINDLE_RPM_OVERRIDE;
+                }
+            } while(idx);
+
             if(settings.parking.flags.enabled)
                 gc_state.modal.override_ctrl.parking_disable = settings.parking.flags.enable_override_control &&
                                                                 settings.parking.flags.deactivate_upon_init;
@@ -3117,7 +3525,6 @@ status_code_t gc_execute_block(char *block)
             if(settings.flags.restore_overrides) {
                 sys.override.feed_rate = DEFAULT_FEED_OVERRIDE;
                 sys.override.rapid_rate = DEFAULT_RAPID_OVERRIDE;
-                sys.override.spindle_rpm = DEFAULT_SPINDLE_RPM_OVERRIDE;
             }
 
             // Execute coordinate change and spindle/coolant stop.
@@ -3133,9 +3540,11 @@ status_code_t gc_execute_block(char *block)
 #endif
 
                 system_flag_wco_change(); // Set to refresh immediately just in case something altered.
-                hal.spindle.set_state(gc_state.modal.spindle, 0.0f);
+
+                spindle_all_off();
                 hal.coolant.set_state(gc_state.modal.coolant);
-                sys.report.spindle = sys.report.coolant = On; // Set to report change immediately
+                system_add_rt_report(Report_Spindle); // Set to report change
+                system_add_rt_report(Report_Coolant); // immediately.
             }
 
             if(grbl.on_program_completed)

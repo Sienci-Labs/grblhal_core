@@ -85,6 +85,7 @@ typedef enum {
     Status_SettingDisabled = 53,
     Status_GcodeInvalidRetractPosition = 54,
     Status_IllegalHomingConfiguration = 55,
+    Status_GCodeCoordSystemLocked = 56,
 
 // Some error codes as defined in bdring's ESP32 port
     Status_SDMountError = 60,
@@ -105,10 +106,16 @@ typedef enum {
 
     Status_AuthenticationRequired = 77,
     Status_AccessDenied = 78,
+    Status_NotAllowedCriticalEvent = 79,
+
+    Status_FlowControlNotExecutingMacro = 80,
+    Status_FlowControlSyntaxError = 81,
+    Status_FlowControlStackOverflow = 82,
+    Status_FlowControlOutOfMemory = 83,
 
     Status_Unhandled, // For internal use only
     Status_StatusMax = Status_Unhandled
-} status_code_t;
+} __attribute__ ((__packed__)) status_code_t;
 
 typedef struct {
     status_code_t id;

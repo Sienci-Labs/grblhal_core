@@ -77,20 +77,19 @@ void mc_sync_backlash_position (void)
 // in the planner and to let backlash compensation or canned cycle integration simple and direct.
 bool mc_line (float *target, plan_line_data_t *pl_data)
 {
-
 #ifdef KINEMATICS_API
     float feed_rate = pl_data->feed_rate;
+    pl_data->rate_multiplier = 1.0;
     target = kinematics.segment_line(target, plan_get_position(), pl_data, true);
 #endif
 
     // If enabled, check for soft limit violations. Placed here all line motions are picked up
     // from everywhere in Grbl.
-    // NOTE: Block jog motions. Jogging is a special case and soft limits are handled independently.
-    if (!pl_data->condition.jog_motion && settings.limits.flags.soft_enabled)
-        limits_soft_check(target);
+    if(!(pl_data->condition.target_validated && pl_data->condition.target_valid))
+        limits_soft_check(target, pl_data->condition);
 
     // If in check gcode mode, prevent motion by blocking planner. Soft limits still work.
-    if (state_get() != STATE_CHECK_MODE && protocol_execute_realtime()) {
+    if(state_get() != STATE_CHECK_MODE && protocol_execute_realtime()) {
 
         // NOTE: Backlash compensation may be installed here. It will need direction info to track when
         // to insert a backlash line motion(s) before the intended line motion and will require its own
@@ -107,7 +106,7 @@ bool mc_line (float *target, plan_line_data_t *pl_data)
         // parser and planner are separate from the system machine positions, this is doable.
 
 #ifdef KINEMATICS_API
-       while(kinematics.segment_line(target, NULL, pl_data, false)) {
+      while(kinematics.segment_line(target, NULL, pl_data, false)) {
 #endif
 
 #if ENABLE_BACKLASH_COMPENSATION
@@ -139,8 +138,7 @@ bool mc_line (float *target, plan_line_data_t *pl_data)
 
                 plan_line_data_t pl_backlash;
 
-                memset(&pl_backlash, 0, sizeof(plan_line_data_t));
-
+                plan_data_init(&pl_backlash);
                 pl_backlash.condition.rapid_motion = On;
                 pl_backlash.condition.backlash_motion = On;
                 pl_backlash.line_number = pl_data->line_number;
@@ -176,9 +174,9 @@ bool mc_line (float *target, plan_line_data_t *pl_data)
         // Plan and queue motion into planner buffer.
         // While in M3 laser mode also set spindle state and force a buffer sync
         // if there is a coincident position passed.
-        if(!plan_buffer_line(target, pl_data) && sys.mode == Mode_Laser && pl_data->condition.spindle.on && !pl_data->condition.spindle.ccw) {
+        if(!plan_buffer_line(target, pl_data) && pl_data->spindle.hal->cap.laser && pl_data->spindle.state.on && !pl_data->spindle.state.ccw) {
             protocol_buffer_synchronize();
-            hal.spindle.set_state(pl_data->condition.spindle, pl_data->spindle.rpm);
+            pl_data->spindle.hal->set_state(pl_data->spindle.state, pl_data->spindle.rpm);
         }
 
 #ifdef KINEMATICS_API
@@ -192,37 +190,59 @@ bool mc_line (float *target, plan_line_data_t *pl_data)
         }
 
         pl_data->feed_rate = feed_rate;
-      }
+      } // while(kinematics.segment_line()
+
+      pl_data->feed_rate = feed_rate;
 #endif
     }
 
     return !ABORTED;
 }
 
-
 // Execute an arc in offset mode format. position == current xyz, target == target xyz,
-// offset == offset from current xyz, axis_X defines circle plane in tool space, axis_linear is
-// the direction of helical travel, radius == circle radius, isclockwise boolean. Used
-// for vector transformation direction.
+// offset == offset from current xyz, plane.axis_X defines circle plane in tool space, plane.axis_linear is
+// the direction of helical travel, radius == circle radius, turns > 0 for CCW arcs. Used
+// for vector transformation direction and number of full turns to add (abs(turns) - 1).
 // The arc is approximated by generating a huge number of tiny, linear segments. The chordal tolerance
 // of each segment is configured in settings.arc_tolerance, which is defined to be the maximum normal
 // distance from segment to the circle when the end points both lie on the circle.
 void mc_arc (float *target, plan_line_data_t *pl_data, float *position, float *offset, float radius, plane_t plane, int32_t turns)
 {
-    float center_axis0 = position[plane.axis_0] + offset[plane.axis_0];
-    float center_axis1 = position[plane.axis_1] + offset[plane.axis_1];
-    float r_axis0 = -offset[plane.axis_0];  // Radius vector from center to current location
-    float r_axis1 = -offset[plane.axis_1];
-    float rt_axis0 = target[plane.axis_0] - center_axis0;
-    float rt_axis1 = target[plane.axis_1] - center_axis1;
+    typedef union {
+        double values[2];
+        struct {
+            double x;
+            double y;
+        };
+    } point_2dd_t;
+
+    point_2dd_t rv = {  // Radius vector from center to current location
+        .x = -(double)offset[plane.axis_0],
+        .y = -(double)offset[plane.axis_1]
+    };
+    point_2dd_t center = {
+        .x = (double)position[plane.axis_0] - rv.x,
+        .y = (double)position[plane.axis_1] - rv.y
+    };
+    point_2dd_t rt = {
+        .x = (double)target[plane.axis_0] - center.x,
+        .y = (double)target[plane.axis_1] - center.y
+    };
     // CCW angle between position and target from circle center. Only one atan2() trig computation required.
-    float angular_travel = atan2f(r_axis0 * rt_axis1 - r_axis1 * rt_axis0, r_axis0 * rt_axis0 + r_axis1 * rt_axis1);
+    float angular_travel = (float)atan2(rv.x * rt.y - rv.y * rt.x, rv.x * rt.x + rv.y * rt.y);
 
     if (turns > 0) { // Correct atan2 output per direction
-        if (angular_travel >= -ARC_ANGULAR_TRAVEL_EPSILON)
-            angular_travel -= 2.0f * M_PI;
-    } else if (angular_travel <= ARC_ANGULAR_TRAVEL_EPSILON)
-        angular_travel += 2.0f * M_PI;
+        if (angular_travel <= ARC_ANGULAR_TRAVEL_EPSILON)
+            angular_travel += 2.0f * M_PI;
+    } else if (angular_travel >= -ARC_ANGULAR_TRAVEL_EPSILON)
+        angular_travel -= 2.0f * M_PI;
+
+    if(!pl_data->condition.target_validated && grbl.check_arc_travel_limits) {
+        pl_data->condition.target_validated = On;
+        pl_data->condition.target_valid = grbl.check_arc_travel_limits((coord_data_t *)target, (coord_data_t *)position,
+                                                                        (point_2d_t){ .x = (float)center.x, .y = (float)center.y },
+                                                                         radius, plane, turns);
+    }
 
     if(labs(turns) > 1) {
 
@@ -235,7 +255,7 @@ void mc_arc (float *target, plan_line_data_t *pl_data, float *position, float *o
         do {
             idx--;
             if(!(idx == plane.axis_0 || idx == plane.axis_1))
-                linear_per_turn[idx] = (target[idx] - position[idx]) / arc_travel * 2.0f * M_PI;;
+                linear_per_turn[idx] = (target[idx] - position[idx]) / arc_travel * 2.0f * M_PI;
         } while(idx);
 #else
         float linear_per_turn = (target[plane.axis_linear] - position[plane.axis_linear]) / arc_travel * 2.0f * M_PI;
@@ -267,7 +287,7 @@ void mc_arc (float *target, plan_line_data_t *pl_data, float *position, float *o
     // (2x) settings.arc_tolerance. For 99% of users, this is just fine. If a different arc segment fit
     // is desired, i.e. least-squares, midpoint on arc, just change the mm_per_arc_segment calculation.
     // For the intended uses of Grbl, this value shouldn't exceed 2000 for the strictest of cases.
-    uint16_t segments = (uint16_t)floorf(fabsf(0.5f * angular_travel * radius) / sqrtf(settings.arc_tolerance * (2.0f * radius - settings.arc_tolerance)));
+    uint_fast16_t segments = (uint_fast16_t)floorf(fabsf(0.5f * angular_travel * radius) / sqrtf(settings.arc_tolerance * (2.0f * radius - settings.arc_tolerance)));
 
     if (segments) {
 
@@ -331,24 +351,24 @@ void mc_arc (float *target, plan_line_data_t *pl_data, float *position, float *o
         for (i = 1; i < segments; i++) { // Increment (segments-1).
 
             if (count < N_ARC_CORRECTION) {
-                // Apply vector rotation matrix. ~40 usec
-                r_axisi = r_axis0 * sin_T + r_axis1 * cos_T;
-                r_axis0 = r_axis0 * cos_T - r_axis1 * sin_T;
-                r_axis1 = r_axisi;
+                // Apply vector rotation matrix.
+                r_axisi = rv.x * sin_T + rv.y * cos_T;
+                rv.x = rv.x * cos_T - rv.y * sin_T;
+                rv.y = r_axisi;
                 count++;
             } else {
                 // Arc correction to radius vector. Computed only every N_ARC_CORRECTION increments.
                 // Compute exact location by applying transformation matrix from initial radius vector(=-offset).
                 cos_Ti = cosf(i * theta_per_segment);
                 sin_Ti = sinf(i * theta_per_segment);
-                r_axis0 = -offset[plane.axis_0] * cos_Ti + offset[plane.axis_1] * sin_Ti;
-                r_axis1 = -offset[plane.axis_0] * sin_Ti - offset[plane.axis_1] * cos_Ti;
+                rv.x = -offset[plane.axis_0] * cos_Ti + offset[plane.axis_1] * sin_Ti;
+                rv.y = -offset[plane.axis_0] * sin_Ti - offset[plane.axis_1] * cos_Ti;
                 count = 0;
             }
 
             // Update arc_target location
-            position[plane.axis_0] = center_axis0 + r_axis0;
-            position[plane.axis_1] = center_axis1 + r_axis1;
+            position[plane.axis_0] = center.x + rv.x;
+            position[plane.axis_1] = center.y + rv.y;
 #if N_AXIS > 3
             idx = N_AXIS;
             do {
@@ -582,7 +602,7 @@ void mc_canned_drill (motion_mode_t motion, float *target, plan_line_data_t *pl_
                 mc_dwell(canned->dwell);
 
             if(canned->spindle_off)
-                hal.spindle.set_state((spindle_state_t){0}, 0.0f);
+                pl_data->spindle.hal->set_state((spindle_state_t){0}, 0.0f);
 
             // rapid retract
             switch(motion) {
@@ -603,7 +623,7 @@ void mc_canned_drill (motion_mode_t motion, float *target, plan_line_data_t *pl_
                 return;
 
             if(canned->spindle_off)
-                spindle_sync(0, gc_state.modal.spindle, pl_data->spindle.rpm);
+                spindle_sync(pl_data->spindle.hal, gc_state.modal.spindle.state, pl_data->spindle.rpm);
         }
 
        // rapid move to next position if incremental mode
@@ -670,7 +690,7 @@ void mc_thread (plan_line_data_t *pl_data, float *position, gc_thread_data *thre
 
     // TODO: Add to initial move to compensate for acceleration distance?
     /*
-    float acc_distance = pl_data->feed_rate * hal.spindle.get_data(SpindleData_RPM)->rpm / settings.acceleration[Z_AXIS];
+    float acc_distance = pl_data->feed_rate * pl_data->spindle.hal->get_data(SpindleData_RPM)->rpm / settings.acceleration[Z_AXIS];
     acc_distance = acc_distance * acc_distance * settings.acceleration[Z_AXIS] * 0.5f;
      */
 
@@ -694,9 +714,9 @@ void mc_thread (plan_line_data_t *pl_data, float *position, gc_thread_data *thre
         if(!protocol_buffer_synchronize() && state_get() != STATE_IDLE) // Wait until any previous moves are finished.
             return;
 
-        pl_data->condition.rapid_motion = Off;          // Clear rapid motion condition flag,
-        pl_data->condition.spindle.synchronized = On;   // enable spindle sync for cut
-        pl_data->overrides.feed_hold_disable = On;      // and disable feed hold
+        pl_data->condition.rapid_motion = Off;      // Clear rapid motion condition flag,
+        pl_data->spindle.state.synchronized = On;   // enable spindle sync for cut
+        pl_data->overrides.feed_hold_disable = On;  // and disable feed hold
 
         // Cut thread pass
 
@@ -723,8 +743,8 @@ void mc_thread (plan_line_data_t *pl_data, float *position, gc_thread_data *thre
                 return;
         }
 
-        pl_data->condition.rapid_motion = On;           // Set rapid motion condition flag and
-        pl_data->condition.spindle.synchronized = Off;  // disable spindle sync for retract & reposition
+        pl_data->condition.rapid_motion = On;       // Set rapid motion condition flag and
+        pl_data->spindle.state.synchronized = Off;  // disable spindle sync for retract & reposition
 
         if(passes > 1) {
 
@@ -756,18 +776,20 @@ void mc_thread (plan_line_data_t *pl_data, float *position, gc_thread_data *thre
 }
 
 // Sets up valid jog motion received from g-code parser, checks for soft-limits, and executes the jog.
-status_code_t mc_jog_execute (plan_line_data_t *pl_data, parser_block_t *gc_block)
+status_code_t mc_jog_execute (plan_line_data_t *pl_data, parser_block_t *gc_block, float *position)
 {
     // Initialize planner data struct for jogging motions.
     // NOTE: Spindle and coolant are allowed to fully function with overrides during a jog.
     pl_data->feed_rate = gc_block->values.f;
-    pl_data->condition.no_feed_override = On;
-    pl_data->condition.jog_motion = On;
+    pl_data->condition.no_feed_override =
+    pl_data->condition.jog_motion =
+    pl_data->condition.target_valid =
+    pl_data->condition.target_validated = On;
     pl_data->line_number = gc_block->values.n;
 
     if(settings.limits.flags.jog_soft_limited)
-        system_apply_jog_limits(gc_block->values.xyz);
-    else if (settings.limits.flags.soft_enabled && !system_check_travel_limits(gc_block->values.xyz))
+        grbl.apply_jog_limits(gc_block->values.xyz, position);
+    else if(sys.soft_limits.mask && !grbl.check_travel_limits(gc_block->values.xyz, sys.soft_limits, true))
         return Status_TravelExceeded;
 
     // Valid jog command. Plan, set state, and execute.
@@ -825,7 +847,7 @@ status_code_t mc_homing_cycle (axes_signals_t cycle)
         // Check and abort homing cycle, if hard limits are already enabled. Helps prevent problems
         // with machines with limits wired on both ends of travel to one limit pin.
         // TODO: Move the pin-specific LIMIT_BIT call to limits.c as a function.
-        if (settings.limits.flags.two_switches && hal.homing.get_state == hal.limits.get_state && limit_signals_merge(hal.limits.get_state()).value) {
+        if (settings.limits.flags.two_switches && hal.home_cap.a.mask == 0 && limit_signals_merge(hal.limits.get_state()).value) {
             mc_reset(); // Issue system reset and ensure spindle and coolant are shutdown.
             system_set_exec_alarm(Alarm_HardLimit);
             return Status_Unhandled;
@@ -853,15 +875,13 @@ status_code_t mc_homing_cycle (axes_signals_t cycle)
         }
 #endif
 
-        state_set(STATE_HOMING);                                // Set homing system state.
+        state_set(STATE_HOMING);                        // Set homing system state.
 #if COMPATIBILITY_LEVEL == 0
-        protocol_enqueue_realtime_command(CMD_STATUS_REPORT);   // Force a status report and
-        delay_sec(0.1f, DelayMode_Dwell);                       // delay a bit to get it sent (or perhaps wait a bit for a request?)
+        system_set_exec_state_flag(EXEC_STATUS_REPORT); // Force a status report and
+        delay_sec(0.1f, DelayMode_Dwell);               // delay a bit to get it sent (or perhaps wait a bit for a request?)
 #endif
-        hal.limits.enable(false, true); // Disable hard limits pin change register for cycle duration
-
         // Turn off spindle and coolant (and update parser state)
-        if(hal.spindle.get_state().on)
+        if(spindle_is_on())
             gc_spindle_off();
 
         if(hal.coolant.get_state().mask)
@@ -890,18 +910,26 @@ status_code_t mc_homing_cycle (axes_signals_t cycle)
         // If hard limits feature enabled, re-enable hard limits pin change register after homing cycle.
         // NOTE: always call at end of homing regadless of setting, may be used to disable
         // sensorless homing or switch back to limit switches input (if different from homing switches)
-        hal.limits.enable(settings.limits.flags.hard_enabled, false);
+        hal.limits.enable(settings.limits.flags.hard_enabled, (axes_signals_t){0});
     }
 
     if(cycle.mask) {
 
-        if(!protocol_execute_realtime()) // Check for reset and set system abort.
-            return Status_Unhandled;     // Did not complete. Alarm state set by mc_alarm.
+        if(!protocol_execute_realtime()) {  // Check for reset and set system abort.
+
+            if(grbl.on_homing_completed)
+                grbl.on_homing_completed(false);
+
+            return Status_Unhandled;        // Did not complete. Alarm state set by mc_alarm.
+        }
 
         if(homed_status != Status_OK) {
 
             if(state_get() == STATE_HOMING)
                 state_set(STATE_IDLE);
+
+            if(grbl.on_homing_completed)
+                grbl.on_homing_completed(false);
 
             return homed_status;
         }
@@ -924,14 +952,17 @@ status_code_t mc_homing_cycle (axes_signals_t cycle)
         sync_position();
     }
 
-    sys.report.homed = On;
+    system_add_rt_report(Report_Homed);
 
     homed_status = settings.limits.flags.hard_enabled && settings.limits.flags.check_at_init && limit_signals_merge(hal.limits.get_state()).value
                     ? Status_LimitsEngaged
                     : Status_OK;
 
-    if(homed_status == Status_OK && grbl.on_homing_completed)
-        grbl.on_homing_completed();
+    if(homed_status == Status_OK)
+        limits_set_work_envelope();
+
+    if(grbl.on_homing_completed)
+        grbl.on_homing_completed(homed_status == Status_OK);
 
     return homed_status;
 }
@@ -940,9 +971,18 @@ status_code_t mc_homing_cycle (axes_signals_t cycle)
 // NOTE: Upon probe failure, the program will be stopped and placed into ALARM state.
 gc_probe_t mc_probe_cycle (float *target, plan_line_data_t *pl_data, gc_parser_flags_t parser_flags)
 {
+    uint_fast8_t idx = N_AXIS;
+
     // TODO: Need to update this cycle so it obeys a non-auto cycle start.
     if (state_get() == STATE_CHECK_MODE)
         return GCProbe_CheckMode;
+
+    do {
+        idx--;
+        sys.probe_position[idx] = lroundf(target[idx] * settings.axis[idx].steps_per_mm);
+    } while(idx);
+
+    sys.probe_coordsys_id = gc_state.modal.coord_system.id;
 
     // Finish all queued commands and empty planner buffer before starting probe cycle.
     if (!protocol_buffer_synchronize())
@@ -979,7 +1019,7 @@ gc_probe_t mc_probe_cycle (float *target, plan_line_data_t *pl_data, gc_parser_f
 
         do {
             idx--;
-            if(position.values[idx] != target[idx])
+            if(fabsf(target[idx] - position.values[idx]) > TOLERANCE_EQUAL)
                 bit_true(axes.mask, bit(idx));
         } while(idx--);
 
@@ -1003,10 +1043,9 @@ gc_probe_t mc_probe_cycle (float *target, plan_line_data_t *pl_data, gc_parser_f
     // Probing cycle complete!
 
     // Set state variables and error out, if the probe failed and cycle with error is enabled.
-    if (sys.probing_state == Probing_Active) {
-        if (parser_flags.probe_is_no_error)
-            memcpy(sys.probe_position, sys.position, sizeof(sys.position));
-        else
+    if(sys.probing_state == Probing_Active) {
+        memcpy(sys.probe_position, sys.position, sizeof(sys.position));
+        if(!parser_flags.probe_is_no_error)
             system_set_exec_alarm(Alarm_ProbeFailContact);
     } else
         sys.flags.probe_succeeded = On; // Indicate to system the probing cycle completed successfully.

@@ -28,9 +28,9 @@
     trinamic_init();
 #endif
 
-#if MODBUS_ENABLE
-    extern void modbus_init (void);
-    modbus_init();
+#if MODBUS_ENABLE && MODBUS_ENABLE & 0x01
+    extern void modbus_rtu_init (void);
+    modbus_rtu_init();
 #endif
 
 #if CANBUS_ENABLE
@@ -43,16 +43,9 @@
     vfd_init();
 #endif
 
-#if N_SPINDLE > 1
-    extern void spindle_select_init(void);
-    spindle_select_init();
-#endif
-
-#ifndef GRBL_ESP32 // ESP32 has its own bluetooth_init
-#if BLUETOOTH_ENABLE
+#if BLUETOOTH_ENABLE > 1
     extern void bluetooth_init (void);
     bluetooth_init();
-#endif
 #endif
 
 #if KEYPAD_ENABLE
@@ -85,13 +78,28 @@
     lb_clusters_init();
 #endif
 
+#if PROBE_PROTECT_ENABLE
+    extern void probe_protect_init (void);
+    probe_protect_init();
+#endif
+
 #if WEBUI_ENABLE
     extern void webui_init (void);
     webui_init();
 #endif
 
+#if EMBROIDERY_ENABLE
+    extern void embroidery_init (void);
+    embroidery_init();
+#endif
+
     extern void my_plugin_init (void);
     my_plugin_init();
+
+#if N_SPINDLE > 1
+    extern void spindle_select_init(void);
+    spindle_select_init();
+#endif
 
 // Third party plugin definitions.
 // The code for these has to be downloaded from the source and placed in the same folder as driver.c
@@ -108,9 +116,19 @@
     probe_relay_init();
 #endif
 
+#if DISPLAY_ENABLE
+    void display_init (void);
+    display_init();
+#endif
+
 #if STATUS_LIGHT_ENABLE
     extern void status_light_init (void);
     status_light_init();
+#endif
+
+#if PANEL_ENABLE
+    extern void panel_init (void);
+    panel_init();
 #endif
 
 #if BOOT_ENTRY_ENABLE

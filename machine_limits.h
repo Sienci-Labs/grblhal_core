@@ -3,7 +3,7 @@
 
   Part of grblHAL
 
-  Copyright (c) 2017-2022 Terje Io
+  Copyright (c) 2017-2023 Terje Io
   Copyright (c) 2012-2015 Sungeun K. Jeon
   Copyright (c) 2009-2011 Simen Svale Skogsrud
 
@@ -33,11 +33,13 @@ typedef enum
     HomingMode_Pulloff
 } homing_mode_t;
 
+void limits_init (void);
+
 // Perform one portion of the homing cycle based on the input settings.
 status_code_t limits_go_home (axes_signals_t cycle);
 
 // Check for soft limit violations
-void limits_soft_check( float *target);
+void limits_soft_check (float *target, planner_cond_t condition);
 
 // Check if homing is required.
 bool limits_homing_required (void);
@@ -45,6 +47,7 @@ bool limits_homing_required (void);
 // Set axes to be homed from settings.
 void limits_set_homing_axes (void);
 void limits_set_machine_positions (axes_signals_t cycle, bool add_pulloff);
+void limits_set_work_envelope (void);
 
 void limit_interrupt_handler (limit_signals_t state);
 

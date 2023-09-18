@@ -5,7 +5,7 @@
 
   Part of grblHAL
 
-  Copyright (c) 2022 Terje Io
+  Copyright (c) 2022-2023 Terje Io
 
   Grbl is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -33,9 +33,12 @@
 #include <time.h>
 
 #define vfs_load_plugin(x)
-#define bcopy(src, dest, len) memmove(dest, src, len)
 
-#if !(defined(__time_t_defined) || defined(__MSP432P401R__) || defined(PART_TM4C123GH6PM))
+#ifndef bcopy
+#define bcopy(src, dest, len) memmove(dest, src, len)
+#endif
+
+#if !(defined(__time_t_defined) || defined(_TIME_H_) || defined(__MSP432P401R__) || defined(PART_TM4C123GH6PM))
 typedef struct {
     short date;
     short time;
@@ -80,10 +83,8 @@ typedef struct {
     uint8_t handle; // first byte of file handle structure
 } vfs_file_t;
 
-typedef struct {
-    const void *fs;
-    uint8_t handle;
-} vfs_dir_t;
+struct vfs_dir;
+typedef struct vfs_dir vfs_dir_t;
 
 typedef struct {
     char name[255];
@@ -92,8 +93,8 @@ typedef struct {
 } vfs_dirent_t;
 
 typedef struct {
-    size_t size;
-    size_t used;
+    uint64_t size;
+    uint64_t used;
 } vfs_free_t;
 
 typedef struct {
@@ -128,6 +129,7 @@ typedef int (*vfs_format_ptr)(void);
 typedef struct
 {
     const char *fs_name;
+    bool removable;
     vfs_st_mode_t mode;
     vfs_open_ptr fopen;
     vfs_close_ptr fclose;
@@ -158,6 +160,12 @@ typedef struct vfs_mount
     struct vfs_mount *next;
 } vfs_mount_t;
 
+typedef struct vfs_mount_ll_entry
+{
+    vfs_mount_t *mount;
+    struct vfs_mount_ll_entry *next;
+} vfs_mount_ll_entry_t;
+
 typedef struct {
     vfs_mount_t *mount;
 } vfs_drives_t;
@@ -165,9 +173,16 @@ typedef struct {
 typedef struct {
     const char *name;
     const char *path;
+    bool removable;
     vfs_st_mode_t mode;
     const void *fs;
 } vfs_drive_t;
+
+struct vfs_dir {
+    const void *fs;
+    vfs_mount_ll_entry_t *mounts;
+    uint8_t handle; // must be last!
+};
 
 extern int vfs_errno;
 

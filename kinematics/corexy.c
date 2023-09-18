@@ -20,16 +20,16 @@
   along with Grbl.  If not, see <http://www.gnu.org/licenses/>.
 */
 
-#include "grbl.h"
+#include "../grbl.h"
 
 #if COREXY
 
 #include <math.h>
 
-#include "hal.h"
-#include "settings.h"
-#include "planner.h"
-#include "kinematics.h"
+#include "../hal.h"
+#include "../settings.h"
+#include "../planner.h"
+#include "../kinematics.h"
 
 // CoreXY motor assignments. DO NOT ALTER.
 // NOTE: If the A and B motor axis bindings are changed, this effects the CoreXY equations.
@@ -52,9 +52,13 @@ inline static int32_t corexy_convert_to_b_motor_steps (int32_t *steps)
 // Returns machine position of axis 'idx'. Must be sent a 'step' array.
 static float *corexy_convert_array_steps_to_mpos (float *position, int32_t *steps)
 {
+    uint_fast8_t idx;
+
     position[X_AXIS] = corexy_convert_to_a_motor_steps(steps) / settings.axis[X_AXIS].steps_per_mm;
     position[Y_AXIS] = corexy_convert_to_b_motor_steps(steps) / settings.axis[Y_AXIS].steps_per_mm;
-    position[Z_AXIS] = steps[Z_AXIS] / settings.axis[Z_AXIS].steps_per_mm;
+
+    for(idx = Z_AXIS; idx < N_AXIS; idx++)
+        position[idx] = steps[idx] / settings.axis[idx].steps_per_mm;
 
     return position;
 }
@@ -193,7 +197,7 @@ static bool homing_cycle_validate (axes_signals_t cycle)
     return (cycle.mask & (X_AXIS_BIT|Y_AXIS_BIT)) == 0 || cycle.mask < 3;
 }
 
-static float homing_cycle_get_feedrate (float feedrate, axes_signals_t cycle)
+static float homing_cycle_get_feedrate (axes_signals_t cycle, float feedrate, homing_mode_t mode)
 {
     return feedrate * sqrtf(2.0f);
 }

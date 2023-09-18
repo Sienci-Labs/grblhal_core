@@ -43,13 +43,20 @@
 #endif
 
 #if COREXY
-#include "corexy.h"
+#include "kinematics/corexy.h"
 #endif
 
 #if WALL_PLOTTER
-#include "wall_plotter.h"
+#include "kinematics/wall_plotter.h"
 #endif
 
+#if DELTA_ROBOT
+#include "kinematics/delta.h"
+#endif
+
+#if POLAR_ROBOT
+#include "kinematics/polar.h"
+#endif
 
 typedef union {
     uint8_t ok;
@@ -59,8 +66,7 @@ typedef union {
                 spindle       :1,
                 amass         :1,
                 pulse_delay   :1,
-                linearization :1,
-                unused        :2;
+                unused        :3;
     };
 } driver_startup_t;
 
@@ -77,6 +83,13 @@ kinematics_t kinematics;
 void dummy_bool_handler (bool arg)
 {
     // NOOP
+}
+
+void reset_handler (void)
+{
+    report_init_fns();
+
+    grbl.on_macro_return = NULL;
 }
 
 static bool dummy_irq_claim (irq_type_t irq, uint_fast8_t id, irq_callback_ptr callback)
@@ -113,6 +126,30 @@ static void auto_realtime_report (sys_state_t state)
     on_execute_realtime(state);
 }
 
+// "Wire" homing signals to limit signals, used when max limit inputs not available.
+ISR_CODE static home_signals_t ISR_FUNC(get_homing_status)(void)
+{
+    home_signals_t home;
+    limit_signals_t limits = hal.limits.get_state();
+
+    home.a.value = limits.min.value;
+    home.b.value = limits.min2.value;
+
+    return home;
+}
+
+// "Wire" homing signals to limit signals, used when max limit inputs available.
+ISR_CODE static home_signals_t ISR_FUNC(get_homing_status2)(void)
+{
+    home_signals_t home;
+    limit_signals_t source = xbar_get_homing_source(), limits = hal.limits.get_state();
+
+    home.a.value = (limits.min.value & source.min.mask) | (limits.max.value & source.max.mask);
+    home.b.value = (limits.min2.value & source.min2.mask) | (limits.max2.value & source.max2.mask);
+
+    return home;
+}
+
 // main entry point
 
 int grbl_enter (void)
@@ -136,7 +173,7 @@ int grbl_enter (void)
     // Clear all and set some HAL function pointers
     memset(&hal, 0, sizeof(grbl_hal_t));
     hal.version = HAL_VERSION; // Update when signatures and/or contract is changed - driver_init() should fail
-    hal.driver_reset = dummy_handler;
+    hal.driver_reset = reset_handler;
     hal.irq_enable = dummy_handler;
     hal.irq_disable = dummy_handler;
     hal.irq_claim = dummy_irq_claim;
@@ -148,6 +185,8 @@ int grbl_enter (void)
     hal.signals_cap.reset = hal.signals_cap.feed_hold = hal.signals_cap.cycle_start = On;
 
     sys.cold_start = true;
+
+    limits_init();
 
 #if NVSDATA_BUFFER_ENABLE
     nvs_buffer_alloc(); // Allocate memory block for NVS buffer
@@ -172,6 +211,22 @@ int grbl_enter (void)
 
 #ifdef NO_SAFETY_DOOR_SUPPORT
     hal.signals_cap.safety_door_ajar = Off;
+#endif
+
+#if COREXY
+    corexy_init();
+#endif
+
+#if WALL_PLOTTER
+    wall_plotter_init();
+#endif
+
+#if DELTA_ROBOT
+    delta_robot_init();
+#endif
+
+#if POLAR_ROBOT
+    polar_init();
 #endif
 
   #if NVSDATA_BUFFER_ENABLE
@@ -203,13 +258,11 @@ int grbl_enter (void)
     if(driver.ok == 0xFF)
         driver.setup = hal.driver_setup(&settings);
 
-    spindle_select(settings.spindle.flags.type);
-
-#ifdef ENABLE_SPINDLE_LINEARIZATION
-    driver.linearization = hal.driver_cap.spindle_pwm_linearization;
-#endif
-
-    driver.spindle = hal.spindle.get_pwm == NULL || hal.spindle.update_pwm != NULL;
+    if((driver.spindle = spindle_select(settings.spindle.flags.type))) {
+        spindle_ptrs_t *spindle = spindle_get(0);
+        driver.spindle = spindle->get_pwm == NULL || spindle->update_pwm != NULL;
+    } else
+        driver.spindle = spindle_select(spindle_add_null());
 
     if(driver.ok != 0xFF) {
         sys.alarm = Alarm_SelftestFailed;
@@ -218,21 +271,11 @@ int grbl_enter (void)
 
     hal.stepper.enable(settings.steppers.deenergize);
 
-    if(hal.spindle.set_state)
-        hal.spindle.set_state((spindle_state_t){0}, 0.0f);
-
+    spindle_all_off();
     hal.coolant.set_state((coolant_state_t){0});
 
     if(hal.get_position)
         hal.get_position(&sys.position); // TODO: restore on abort when returns true?
-
-#if COREXY
-    corexy_init();
-#endif
-
-#if WALL_PLOTTER
-    wall_plotter_init();
-#endif
 
 #if ENABLE_BACKLASH_COMPENSATION
     mc_backlash_init((axes_signals_t){AXES_BITMASK});
@@ -242,7 +285,7 @@ int grbl_enter (void)
 
     // "Wire" homing switches to limit switches if not provided by the driver.
     if(hal.homing.get_state == NULL)
-        hal.homing.get_state = hal.limits.get_state;
+        hal.homing.get_state = hal.limits_cap.max.mask ? get_homing_status2 : get_homing_status;
 
     if(settings.report_interval) {
         on_execute_realtime = grbl.on_execute_realtime;
@@ -252,6 +295,8 @@ int grbl_enter (void)
     // Grbl initialization loop upon power-up or a system abort. For the latter, all processes
     // will return to this loop to be cleanly re-initialized.
     while(looping) {
+
+        spindle_num_t spindle_num = N_SYS_SPINDLE;
 
         // Reset report entry points
         report_init_fns();
@@ -264,7 +309,10 @@ int grbl_enter (void)
         sys.var5399 = -2;                                        // Clear last M66 result
         sys.override.feed_rate = DEFAULT_FEED_OVERRIDE;          // Set to 100%
         sys.override.rapid_rate = DEFAULT_RAPID_OVERRIDE;        // Set to 100%
-        sys.override.spindle_rpm = DEFAULT_SPINDLE_RPM_OVERRIDE; // Set to 100%
+        do {
+            if(spindle_is_enabled(--spindle_num))
+                spindle_get(spindle_num)->param->override_pct = DEFAULT_SPINDLE_RPM_OVERRIDE; // Set to 100%
+        } while(spindle_num);
         sys.flags.auto_reporting = settings.report_interval != 0;
 
         if(settings.parking.flags.enabled)
@@ -275,7 +323,7 @@ int grbl_enter (void)
         // Reset Grbl primary systems.
         hal.stream.reset_read_buffer(); // Clear input stream buffer
         gc_init();                      // Set g-code parser to default state
-        hal.limits.enable(settings.limits.flags.hard_enabled, false);
+        hal.limits.enable(settings.limits.flags.hard_enabled, (axes_signals_t){0});
         plan_reset();                   // Clear block buffer and planner variables
         st_reset();                     // Clear stepper subsystem variables.
         limits_set_homing_axes();       // Set axes to be homed from settings.
@@ -290,9 +338,9 @@ int grbl_enter (void)
             tc_init();
 
         // Print welcome message. Indicates an initialization has occurred at power-up or with a reset.
-        report_init_message();
+        grbl.report.init_message();
 
-        if(state_get() == STATE_ESTOP)
+        if(!settings.flags.no_unlock_after_estop && state_get() == STATE_ESTOP)
             state_set(STATE_ALARM);
 
         if(hal.driver_cap.mpg_mode)

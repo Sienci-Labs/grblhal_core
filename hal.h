@@ -60,12 +60,12 @@ typedef union {
                  wifi                      :1,
                  spindle_pid               :1,
                  mpg_mode                  :1,
-                 spindle_pwm_linearization :1,
                  laser_ppi_mode            :1, //!< Laser PPI (Pulses Per Inch) mode is supported.
                  atc                       :1, //!< Automatic tool changer (ATC) is supported.
                  no_gcode_message_handling :1,
                  odometers                 :1,
                  pwm_spindle               :1,
+                 probe_latch               :1,
                  unassigned                :11;
     };
 } driver_cap_t;
@@ -79,14 +79,6 @@ typedef void (*driver_reset_ptr)(void);
 
 /*! \brief Pointer to function for getting free memory (as sum of all free blocks in the heap). */
 typedef uint32_t (*get_free_mem_ptr)(void);
-
-/*! \brief Optional pointer to function for switching between I/O streams.
-\param stream pointer to io_stream_t
-\returns true if switch was successful
-
-__NOTE:__ required if the networking plugin is to be supported.
-*/
-typedef bool (*stream_select_ptr)(const io_stream_t *stream);
 
 /*! \brief Pointer to function for registering information about a peripheral pin.
 \param pin as periph_pin_t struct containing pin information.
@@ -149,7 +141,7 @@ typedef struct {
 \param on true to enable limit switches interrupts.
 \param homing true when machine is in a homing cycle. Usually ignored by driver code, may be used if Trinamic drivers are supported.
 */
-typedef void (*limits_enable_ptr)(bool on, bool homing);
+typedef void (*limits_enable_ptr)(bool on, axes_signals_t homing_cycle);
 
 /*! \brief Pointer to function for getting limit switches state.
 \returns switch states in a limit_signals_t struct.
@@ -173,11 +165,15 @@ typedef struct {
  *  Homing  *
  ************/
 
+/*! \brief Pointer to function for getting home switches state.
+\returns switch states in a home_signals_t struct.
+*/
+typedef home_signals_t (*home_get_state_ptr)(void);
 typedef float (*homing_get_feedrate_ptr)(axes_signals_t axes, homing_mode_t mode);
 
 //! Limit switches handler for homing cycle.
 typedef struct {
-    limits_get_state_ptr get_state;                     //!< Handler for getting limit switches status. Usually set to the same function as _hal.limits.get_state_.
+    home_get_state_ptr get_state;                     //!< Handler for getting homing switches status. Usually read from _hal.limits.get_state_.
     homing_get_feedrate_ptr get_feedrate;
 } homing_ptrs_t;
 
@@ -241,7 +237,7 @@ typedef void (*stepper_wake_up_ptr)(void);
 
 \param clear_signals when true stepper motor outputs can be reset to the default state. This parameter can often be ignored.
 
-__NOTE:__ this function will be called from an interrupt context
+__NOTE:__ this function will be called from an interrupt context.
 */
 typedef void (*stepper_go_idle_ptr)(bool clear_signals);
 
@@ -249,7 +245,7 @@ typedef void (*stepper_go_idle_ptr)(bool clear_signals);
 
 \param enable a \a axes_signals_t union containing separate flags for each motor to enable/disable.
 
-__NOTE:__ this function may be called from an interrupt context
+__NOTE:__ this function may be called from an interrupt context.
 */
 typedef void (*stepper_enable_ptr)(axes_signals_t enable);
 
@@ -283,7 +279,7 @@ If the driver is to support spindle synced motion many more needs to be referenc
 
 \param stepper pointer to a \ref stepper struct containing information about the stepper signals to be output.
 
-__NOTE:__ this function will be called from an interrupt context
+__NOTE:__ this function will be called from an interrupt context.
 */
 typedef void (*stepper_pulse_start_ptr)(stepper_t *stepper);
 
@@ -294,7 +290,7 @@ This is for an experimental implementation of plasma Torch Height Control (THC) 
 \param step_outbits a \a #axes_signals_t union containing the axes to output a step signal for.
 \param dir_outbits a \a #axes_signals_t union containing the axes to output a direction signal for.
 
-__NOTE:__ this function will be called from an interrupt context
+__NOTE:__ this function will be called from an interrupt context.
 */
 typedef void (*stepper_output_step_ptr)(axes_signals_t step_outbits, axes_signals_t dir_outbits);
 
@@ -313,14 +309,14 @@ typedef void (*stepper_interrupt_callback_ptr)(void);
 //! Stepper motor handlers
 typedef struct {
     stepper_wake_up_ptr wake_up;                        //!< Handler for enabling stepper motor power and main stepper interrupt.
-    stepper_go_idle_ptr go_idle;                        //!< Handler for disabling main stepper interrupt and optionally reset stepper signals.
-    stepper_enable_ptr enable;                          //!< Handler for enabling/disabling stepper motor power for individual motors.
+    stepper_go_idle_ptr go_idle;                        //!< Handler for disabling main stepper interrupt and optionally reset stepper signals. Called from interrupt context.
+    stepper_enable_ptr enable;                          //!< Handler for enabling/disabling stepper motor power for individual motors. Called from interrupt context.
     stepper_disable_motors_ptr disable_motors;          //!< Optional handler for enabling/disabling stepper motor step signals for individual motors.
-    stepper_cycles_per_tick_ptr cycles_per_tick;        //!< Handler for setting the step pulse rate for the next motion segment.
-    stepper_pulse_start_ptr pulse_start;                //!< Handler for starting outputting direction signals and a step pulse.
+    stepper_cycles_per_tick_ptr cycles_per_tick;        //!< Handler for setting the step pulse rate for the next motion segment. Called from interrupt context.
+    stepper_pulse_start_ptr pulse_start;                //!< Handler for starting outputting direction signals and a step pulse. Called from interrupt context.
     stepper_interrupt_callback_ptr interrupt_callback;  //!< Callback for informing about the next step pulse to output. _Set by the core at startup._
     stepper_get_ganged_ptr get_ganged;                  //!< Optional handler getting which axes are configured for ganging or auto squaring.
-    stepper_output_step_ptr output_step;                //!< Optional handler for outputting a single step pulse. _Experimental._
+    stepper_output_step_ptr output_step;                //!< Optional handler for outputting a single step pulse. _Experimental._ Called from interrupt context.
     motor_iterator_ptr motor_iterator;                  //!< Optional handler iteration over motor vs. axis mappings. Required for the motors plugin (Trinamic drivers).
 } stepper_ptrs_t;
 
@@ -344,7 +340,9 @@ typedef struct {
  ***********/
 
 /*! \brief Pointer to function for getting probe status.
-\returns probe state in a \a #probe_state_t enum.
+\returns probe state in a \a #probe_state_t union.
+
+__NOTE:__ this function will be called from an interrupt context.
 */
 typedef probe_state_t (*probe_get_state_ptr)(void);
 
@@ -364,7 +362,7 @@ typedef void (*probe_connected_toggle_ptr)(void);
 //! Handlers for probe input(s).
 typedef struct {
     probe_configure_ptr configure;                  //!< Optional handler for setting probe operation mode.
-    probe_get_state_ptr get_state;                  //!< Optional handler for getting probe status.
+    probe_get_state_ptr get_state;                  //!< Optional handler for getting probe status. Called from interrupt context.
     probe_connected_toggle_ptr connected_toggle;    //!< Optional handler for toggling probe connected status.
 } probe_ptrs_t;
 
@@ -506,6 +504,10 @@ typedef struct {
     rtc_set_datetime_ptr set_datetime;  //!< Optional handler setting the current datetime.
 } rtc_ptrs_t;
 
+/*! \brief Pointer to function for performing a pallet shuttle.
+*/
+typedef void (*pallet_shuttle_ptr)(void);
+
 /*! \brief HAL structure used for the driver interface.
 
 This structure contains properties and function pointers (to handlers) that the core uses to communicate with the driver.
@@ -580,13 +582,12 @@ typedef struct {
     irq_claim_ptr irq_claim;
 
     limits_ptrs_t limits;                   //!< Handlers for limit switches.
-    homing_ptrs_t homing;                   //!< Handlers for limit switches, used by homing cycle.
+    homing_ptrs_t homing;                   //!< Handlers for homing switches, used by homing cycle.
     control_signals_ptrs_t control;         //!< Handlers for control switches.
     coolant_ptrs_t coolant;                 //!< Handlers for coolant.
-    spindle_ptrs_t spindle;                 //!< Handlers for spindle.
+    spindle_data_ptrs_t spindle_data;       //!< Handlers for getting/resetting spindle data (RPM, angular position, ...).
     stepper_ptrs_t stepper;                 //!< Handlers for stepper motors.
     io_stream_t stream;                     //!< Handlers for stream I/O.
-    stream_select_ptr stream_select;        //!< Optional handler for switching between I/O streams.
     settings_changed_ptr settings_changed;  //!< Callback handler to be called on settings loaded or settings changed events.
     probe_ptrs_t probe;                     //!< Optional handlers for probe input(s).
     tool_ptrs_t tool;                       //!< Optional handlers for tool changes.
@@ -598,7 +599,7 @@ typedef struct {
     enumerate_pins_ptr enumerate_pins;      //!< Optional handler for enumerating pins used by the driver.
     bool (*driver_release)(void);           //!< Optional handler for releasing hardware resources before exiting.
     uint32_t (*get_elapsed_ticks)(void);    //!< Optional handler for getting number of elapsed 1ms tics since startup. Required by a number of plugins.
-    void (*pallet_shuttle)(void);           //!< Optional handler for performing a pallet shuttle on program end (M60).
+    pallet_shuttle_ptr pallet_shuttle;      //!< Optional handler for performing a pallet shuttle on program end (M60).
     void (*reboot)(void);                   //!< Optoional handler for rebooting the controller. This will be called when #ASCII_ESC followed by #CMD_REBOOT is received.
 
     user_mcode_ptrs_t user_mcode;           //!< Optional handlers for user defined M-codes.
@@ -624,7 +625,9 @@ typedef struct {
     bool (*stream_blocking_callback)(void);
 
     driver_cap_t driver_cap;                //!< Basic driver capabilities flags.
-    control_signals_t signals_cap;          //!< Control input signals supported by the core.
+    control_signals_t signals_cap;          //!< Control input signals supported by the driver.
+    limit_signals_t limits_cap;             //!< Limit input signals supported by the driver.
+    home_signals_t home_cap;                //!< Home input signals supported by the driver.
 
 } grbl_hal_t;
 
