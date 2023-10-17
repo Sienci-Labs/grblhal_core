@@ -137,8 +137,13 @@
 #endif
 
 #if AUX_MACROS_ENABLE
-    extern bool aux_macros_init (void);
+    extern void aux_macros_init (void);
     aux_macros_init();
+#endif
+
+#if SIENCI_LASER_PWM
+    extern void pwm_switch_init (void);
+    pwm_switch_init();
 #endif
 
 // End third party plugin definitions.
