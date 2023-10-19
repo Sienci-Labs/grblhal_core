@@ -586,13 +586,13 @@
 #endif // Z_DOUBLED
 
 #ifdef X_DOUBLED
-#define X2_MOTOR (N_AXIS + X_DOUBLED - 2)
+#define X2_MOTOR (N_AXIS + X_DOUBLED - 1)
 #endif
 #ifdef Y_DOUBLED
-#define Y2_MOTOR (N_AXIS + Y_DOUBLED - 2)
+#define Y2_MOTOR (N_AXIS + Y_DOUBLED - 1)
 #endif
 #ifdef Z_DOUBLED
-#define Z2_MOTOR (N_AXIS + Z_DOUBLED - 2)
+#define Z2_MOTOR (N_AXIS + Z_DOUBLED - 1)
 #endif
 
 #endif // N_GANGED
