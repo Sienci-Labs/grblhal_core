@@ -96,6 +96,11 @@
     extern void my_plugin_init (void);
     my_plugin_init();
 
+#if SIENCI_LASER_PWM //this needs to go ahead of spindle select so that the laser is registered.
+    extern void pwm_switch_init (void);
+    pwm_switch_init();
+#endif
+
 #if N_SPINDLE > 1
     extern void spindle_select_init(void);
     spindle_select_init();
@@ -139,11 +144,6 @@
 #if AUX_MACROS_ENABLE
     extern void aux_macros_init (void);
     aux_macros_init();
-#endif
-
-#if SIENCI_LASER_PWM
-    extern void pwm_switch_init (void);
-    pwm_switch_init();
 #endif
 
 // End third party plugin definitions.
