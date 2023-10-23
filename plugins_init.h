@@ -146,6 +146,9 @@
     aux_macros_init();
 #endif
 
+    extern void probe_protect_init (void);
+    probe_protect_init();
+
 // End third party plugin definitions.
 
 #if ODOMETER_ENABLE
