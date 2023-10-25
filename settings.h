@@ -29,7 +29,7 @@
 #include "plugins.h"
 
 // Version of the persistent storage data. Always stored in byte 0 of non-volatile storage.
-#define SETTINGS_VERSION 22  // NOTE: Check settings_reset() when moving to next version.
+#define SETTINGS_VERSION 23  // NOTE: Check settings_reset() when moving to next version.
 
 // Define axis settings numbering scheme. Starts at Setting_AxisSettingsBase, every INCREMENT, over N_SETTINGS.
 #define AXIS_SETTINGS_INCREMENT  10 // Must be greater than the number of axis settings.
@@ -400,6 +400,26 @@ typedef enum {
     Setting_Kinematics7         = 647,
     Setting_Kinematics8         = 648,
     Setting_Kinematics9         = 649,
+
+#ifdef BOARD_LONGBOARD32
+
+    Setting_SLB32_TMC2660_toff  = 650,
+    Setting_SLB32_TMC2660_tbl   = 651,
+    Setting_SLB32_TMC2660_chm   = 652,
+    Setting_SLB32_TMC2660_hstr  = 653,
+    Setting_SLB32_TMC2660_hend  = 654,
+    Setting_SLB32_TMC2660_hdec  = 655,
+    Setting_SLB32_TMC2660_rndtf = 656,
+
+    Setting_SLB32_TMC2660_semin = 657,
+    Setting_SLB32_TMC2660_seup  = 658,
+    Setting_SLB32_TMC2660_semax = 659,
+    Setting_SLB32_TMC2660_sedn  = 660,
+    Setting_SLB32_TMC2660_seimin= 661, 
+
+    Setting_SLB32_TMC2660_drvconf=662,
+
+#endif    
 
     Setting_SettingsMax,
     Setting_SettingsAll = Setting_SettingsMax,
