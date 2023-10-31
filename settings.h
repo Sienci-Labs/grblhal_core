@@ -401,7 +401,7 @@ typedef enum {
     Setting_Kinematics8         = 648,
     Setting_Kinematics9         = 649,
 
-#ifdef BOARD_LONGBOARD32
+#if (0)
 
     Setting_SLB32_TMC2660_toff  = 650,
     Setting_SLB32_TMC2660_tbl   = 651,
@@ -411,13 +411,28 @@ typedef enum {
     Setting_SLB32_TMC2660_hdec  = 655,
     Setting_SLB32_TMC2660_rndtf = 656,
 
-    Setting_SLB32_TMC2660_semin = 657,
-    Setting_SLB32_TMC2660_seup  = 658,
-    Setting_SLB32_TMC2660_semax = 659,
-    Setting_SLB32_TMC2660_sedn  = 660,
-    Setting_SLB32_TMC2660_seimin= 661, 
+    Setting_SLB32_TMC2660_THRESH= 657, 
 
-    Setting_SLB32_TMC2660_drvconf=662,
+    Setting_SLB32_TMC2660_semin = 658,
+    Setting_SLB32_TMC2660_seup  = 659,
+    Setting_SLB32_TMC2660_semax = 660,
+    Setting_SLB32_TMC2660_sedn  = 661,
+    Setting_SLB32_TMC2660_seimin= 662,
+
+    Setting_SLB32_TMC2660_drvconf=663,
+
+    Setting_Laser_RpmMax = 664,
+    Setting_Laser_RpmMin = 665,
+    Setting_Laser_PWMFreq = 666,
+    Setting_Laser_PWMOffValue = 667,
+    Setting_Laser_PWMMinValue = 668,
+    Setting_Laser_PWMMaxValue = 669,
+
+    Setting_SLB32_RingLEDNum  = 670,
+    Setting_SLB32_RailLEDNum  = 671,
+
+    Setting_SLB32_Capabilities1  = 672,
+    Setting_SLB32_Capabilities2  = 673,
 
 #endif    
 
