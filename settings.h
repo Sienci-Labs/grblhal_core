@@ -427,12 +427,14 @@ typedef enum {
     Setting_Laser_PWMOffValue = 667,
     Setting_Laser_PWMMinValue = 668,
     Setting_Laser_PWMMaxValue = 669,
+    Setting_Laser_XOffset     = 670,
+    Setting_Laser_YOffset     = 671,    
 
-    Setting_SLB32_RingLEDNum  = 670,
-    Setting_SLB32_RailLEDNum  = 671,
+    Setting_SLB32_RingLEDNum  = 672,
+    Setting_SLB32_RailLEDNum  = 673,
 
-    Setting_SLB32_Capabilities1  = 672,
-    Setting_SLB32_Capabilities2  = 673,
+    Setting_SLB32_Capabilities1  = 674,
+    Setting_SLB32_Capabilities2  = 675,
 
 #endif    
 
