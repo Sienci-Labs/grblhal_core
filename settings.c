@@ -167,6 +167,9 @@ PROGMEM const settings_t defaults = {
     .spindle.pid.i_gain = DEFAULT_SPINDLE_I_GAIN,
     .spindle.pid.d_gain = DEFAULT_SPINDLE_D_GAIN,
     .spindle.pid.i_max_error = DEFAULT_SPINDLE_I_MAX,
+#if BOARD_LONGBOARD32
+    .spindle.flags.type = SLB_DEFAULT_SPINDLE,
+#endif
 #if ENABLE_SPINDLE_LINEARIZATION
   #if SPINDLE_NPWM_PIECES > 0
     .spindle.pwm_piece[0] = { .rpm = DEFAULT_RPM_POINT01, .start = DEFAULT_RPM_LINE_A1, .end = DEFAULT_RPM_LINE_B1 },
