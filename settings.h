@@ -421,20 +421,26 @@ typedef enum {
 
     Setting_SLB32_TMC2660_drvconf=663,
 
-    Setting_Laser_RpmMax = 664,
-    Setting_Laser_RpmMin = 665,
-    Setting_Laser_PWMFreq = 666,
-    Setting_Laser_PWMOffValue = 667,
-    Setting_Laser_PWMMinValue = 668,
-    Setting_Laser_PWMMaxValue = 669,
-    Setting_Laser_XOffset     = 670,
-    Setting_Laser_YOffset     = 671,    
+    //Setting_SLB32_RingLEDNum  = 664,
+    //Setting_SLB32_RailLEDNum  = 665,
 
-    Setting_SLB32_RingLEDNum  = 672,
-    Setting_SLB32_RailLEDNum  = 673,
-
-    Setting_SLB32_Capabilities1  = 674,
-    Setting_SLB32_Capabilities2  = 675,
+    Setting_SLB32_Capabilities1  = 666,
+    Setting_SLB32_Capabilities2  = 667,
+    Setting_InvertTLSPin  = 668,   
+    
+    Setting_Laser_RpmMax = 730,
+    Setting_Laser_RpmMin = 731,
+    Setting_Laser_Mode1 = 732,
+    Setting_Laser_PWMFreq = 733,
+    Setting_Laser_PWMOffValue = 734,
+    Setting_Laser_PWMMinValue = 735,
+    Setting_Laser_PWMMaxValue = 736,
+    Setting_LinearSpindle1Piece1 = 737,
+    Setting_LinearSpindle1Piece2 = 738,
+    Setting_LinearSpindle1Piece3 = 739,
+    Setting_LinearSpindle1Piece4 = 740,    
+    Setting_Laser_XOffset     = 741,
+    Setting_Laser_YOffset     = 742,    
 
 #endif    
 
