@@ -421,8 +421,8 @@ typedef enum {
 
     Setting_SLB32_TMC2660_drvconf=663,
 
-    //Setting_SLB32_RingLEDNum  = 664,
-    //Setting_SLB32_RailLEDNum  = 665,
+    Setting_SLB32_RingLEDNum  = 664,
+    Setting_SLB32_RailLEDNum  = 665,
 
     Setting_SLB32_Capabilities1  = 666,
     Setting_SLB32_Capabilities2  = 667,
