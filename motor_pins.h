@@ -589,7 +589,11 @@
 #define X2_MOTOR (N_AXIS + X_DOUBLED - 1)
 #endif
 #ifdef Y_DOUBLED
+#if N_AXIS < 4
 #define Y2_MOTOR (N_AXIS + Y_DOUBLED - 1)
+#else
+#define Y2_MOTOR (3 + Y_DOUBLED - 1) //this is a longboard fix for iteration error.
+#endif
 #endif
 #ifdef Z_DOUBLED
 #define Z2_MOTOR (N_AXIS + Z_DOUBLED - 1)
