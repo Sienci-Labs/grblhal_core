@@ -440,7 +440,8 @@ typedef enum {
     Setting_LinearSpindle1Piece3 = 739,
     Setting_LinearSpindle1Piece4 = 740,    
     Setting_Laser_XOffset     = 741,
-    Setting_Laser_YOffset     = 742,    
+    Setting_Laser_YOffset     = 742,
+    Setting_LaserInvertMask     = 743,        
 
 #endif    
 
