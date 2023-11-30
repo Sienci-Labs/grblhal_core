@@ -146,11 +146,11 @@
     aux_macros_init();
 #endif
 
-extern void switchbank_init (void);
-switchbank_init();
-
 extern void probe_protect_init (void);
 probe_protect_init();
+
+extern void switchbank_init (void);
+switchbank_init();
 
 // End third party plugin definitions.
 
