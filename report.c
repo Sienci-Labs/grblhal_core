@@ -1974,19 +1974,21 @@ status_code_t report_error_details (bool grbl_format)
 
 static void print_setting_group (const setting_group_detail_t *group, char *prefix)
 {
-    if(settings_is_group_available(group->id)) {
-        if(!prefix) {
-            hal.stream.write("[SETTINGGROUP:");
-            hal.stream.write(uitoa(group->id));
-            hal.stream.write(vbar);
-            hal.stream.write(uitoa(group->parent));
-            hal.stream.write(vbar);
-            hal.stream.write(group->name);
-            hal.stream.write("]" ASCII_EOL);
-        } else if(group->id != Group_Root) {
-            hal.stream.write(prefix);
-            hal.stream.write(group->name);
-            hal.stream.write(ASCII_EOL);
+    if(group->id){
+        if(settings_is_group_available(group->id)) {
+            if(!prefix) {
+                hal.stream.write("[SETTINGGROUP:");
+                hal.stream.write(uitoa(group->id));
+                hal.stream.write(vbar);
+                hal.stream.write(uitoa(group->parent));
+                hal.stream.write(vbar);
+                hal.stream.write(group->name);
+                hal.stream.write("]" ASCII_EOL);
+            } else if(group->id != Group_Root) {
+                hal.stream.write(prefix);
+                hal.stream.write(group->name);
+                hal.stream.write(ASCII_EOL);
+            }
         }
     }
 }
