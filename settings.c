@@ -81,6 +81,12 @@ PROGMEM const settings_t defaults = {
     .flags.force_initialization_alarm = DEFAULT_FORCE_INITIALIZATION_ALARM,
     .flags.restore_overrides = DEFAULT_RESET_OVERRIDES,
     .flags.no_restore_position_after_M6 = DEFAULT_TOOLCHANGE_NO_RESTORE_POSITION,
+    #if (BOARD_LONGBOARD32)
+        #ifndef DEFAULT_NO_UNLOCK_AFTER_ESTOP
+            #define DEFAULT_NO_UNLOCK_AFTER_ESTOP 1
+        #endif
+        .flags.no_unlock_after_estop = DEFAULT_NO_UNLOCK_AFTER_ESTOP,
+    #endif
 
     .probe.disable_probe_pullup = DEFAULT_PROBE_SIGNAL_DISABLE_PULLUP,
     .probe.allow_feed_override = DEFAULT_ALLOW_FEED_OVERRIDE_DURING_PROBE_CYCLES,
