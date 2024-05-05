@@ -776,7 +776,7 @@ PROGMEM static const setting_descr_t setting_descr[] = {
     { Setting_PlannerBlocks, "Number of blocks in the planner buffer." },
     { Setting_AutoReportInterval, "Interval the real time report will be sent, set to 0 to disable." },
     { Setting_TimeZoneOffset, "Offset in hours from UTC." },
-    { Setting_UnlockAfterEStop, "If set unlock (by sending $X) is required after resetting a cleared E-Stop condition." },
+    { Setting_UnlockAfterEStop, "If set unlock (by sending $X) is required after resetting a cleared E-Stop condition.  A hard reset of the controller is required after changing this setting." },
 #if COMPATIBILITY_LEVEL <= 1
      { Setting_OffsetLock, "Lock coordinate systems against accidental changes." },
 #endif
@@ -1059,7 +1059,7 @@ static status_code_t set_estop_unlock (setting_id_t id, uint_fast16_t int_value)
     if(!hal.signals_cap.e_stop)
         return Status_SettingDisabled;
 
-    settings.flags.no_unlock_after_estop = int_value != 0;
+    settings.flags.no_unlock_after_estop = int_value;
 
     return Status_OK;
 }
@@ -1645,7 +1645,7 @@ static uint32_t get_int (setting_id_t id)
 #endif
 
         case Setting_UnlockAfterEStop:
-            value = settings.flags.no_unlock_after_estop ? 0 : 1;
+            value = !settings.flags.no_unlock_after_estop;
             break;
 
         case Setting_OffsetLock:
