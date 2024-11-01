@@ -1,11 +1,9 @@
 /*
-  tool_change.h - An embedded CNC Controller with rs274/ngc (g-code) support
-
-  Manual tool change with automatic touch off
+  stream_file.h - stream redirector for file input
 
   Part of grblHAL
 
-  Copyright (c) 2020-2024 Terje Io
+  Copyright (c) 2024 Terje Io
 
   grblHAL is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -21,10 +19,10 @@
   along with grblHAL. If not, see <http://www.gnu.org/licenses/>.
 */
 
-#ifndef _TOOL_CHANGE_H_
-#define _TOOL_CHANGE_H_
+#pragma once
 
-void tc_init (void);
-status_code_t tc_probe_workpiece (void);
+#include "vfs.h"
+#include "core_handlers.h"
 
-#endif
+void stream_redirect_close (vfs_file_t *file);
+vfs_file_t *stream_redirect_read (char *filename, status_message_ptr status_handler, on_file_end_ptr eof_handler);
