@@ -423,49 +423,6 @@ typedef enum {
     Setting_Kinematics8         = 648,
     Setting_Kinematics9         = 649,
 
-#if (BOARD_LONGBOARD32)
-
-    Setting_SLB32_TMC2660_toff  = 650,
-    Setting_SLB32_TMC2660_tbl   = 651,
-    Setting_SLB32_TMC2660_chm   = 652,
-    Setting_SLB32_TMC2660_hstr  = 653,
-    Setting_SLB32_TMC2660_hend  = 654,
-    Setting_SLB32_TMC2660_hdec  = 655,
-    Setting_SLB32_TMC2660_rndtf = 656,
-
-    Setting_SLB32_TMC2660_THRESH= 657, 
-
-    Setting_SLB32_TMC2660_semin = 658,
-    Setting_SLB32_TMC2660_seup  = 659,
-    Setting_SLB32_TMC2660_semax = 660,
-    Setting_SLB32_TMC2660_sedn  = 661,
-    Setting_SLB32_TMC2660_seimin= 662,
-
-    Setting_SLB32_TMC2660_drvconf=663,
-
-    Setting_SLB32_RingLEDNum  = 664,
-    Setting_SLB32_RailLEDNum  = 665,
-
-    Setting_SLB32_Capabilities1  = 666,
-    Setting_SLB32_Capabilities2  = 667,
-    Setting_InvertTLSPin  = 668,   
-    
-    Setting_Laser_RpmMax = 730,
-    Setting_Laser_RpmMin = 731,
-    Setting_Laser_Mode1 = 732,
-    Setting_Laser_PWMFreq = 733,
-    Setting_Laser_PWMOffValue = 734,
-    Setting_Laser_PWMMinValue = 735,
-    Setting_Laser_PWMMaxValue = 736,
-    Setting_LinearSpindle1Piece1 = 737,
-    Setting_LinearSpindle1Piece2 = 738,
-    Setting_LinearSpindle1Piece3 = 739,
-    Setting_LinearSpindle1Piece4 = 740,    
-    Setting_Laser_XOffset     = 741,
-    Setting_Laser_YOffset     = 742,
-    Setting_LaserInvertMask     = 743,        
-
-#endif    
     Setting_FSOptions = 650,
 
     Setting_Stepper1  = 651,
@@ -544,6 +501,53 @@ typedef enum {
 //
 
 // ---
+
+#if (BOARD_LONGBOARD32)
+	
+// SLB settings moved to 3000 range.
+
+    Setting_SLB32_TMC2660_toff  = 3650,
+    Setting_SLB32_TMC2660_tbl   = 3651,
+    Setting_SLB32_TMC2660_chm   = 3652,
+    Setting_SLB32_TMC2660_hstr  = 3653,
+    Setting_SLB32_TMC2660_hend  = 3654,
+    Setting_SLB32_TMC2660_hdec  = 3655,
+    Setting_SLB32_TMC2660_rndtf = 3656,
+
+    Setting_SLB32_TMC2660_THRESH= 3657, 
+
+    Setting_SLB32_TMC2660_semin = 3658,
+    Setting_SLB32_TMC2660_seup  = 3659,
+    Setting_SLB32_TMC2660_semax = 3660,
+    Setting_SLB32_TMC2660_sedn  = 3661,
+    Setting_SLB32_TMC2660_seimin= 3662,
+
+    Setting_SLB32_TMC2660_drvconf=3663,
+
+    Setting_SLB32_RingLEDNum  = 3664,
+    Setting_SLB32_RailLEDNum  = 3665,
+
+    Setting_SLB32_Capabilities1  = 3666,
+    Setting_SLB32_Capabilities2  = 3667,
+    Setting_InvertTLSPin  = 3668,   
+    
+    Setting_Laser_RpmMax = 3730,
+    Setting_Laser_RpmMin = 3731,
+    Setting_Laser_Mode1 = 3732,
+    Setting_Laser_PWMFreq = 3733,
+    Setting_Laser_PWMOffValue = 3734,
+    Setting_Laser_PWMMinValue = 3735,
+    Setting_Laser_PWMMaxValue = 3736,
+    Setting_LinearSpindle1Piece1 = 3737,
+    Setting_LinearSpindle1Piece2 = 3738,
+    Setting_LinearSpindle1Piece3 = 3739,
+    Setting_LinearSpindle1Piece4 = 3740,    
+    Setting_Laser_XOffset     = 3741,
+    Setting_Laser_YOffset     = 3742,
+    Setting_LaserInvertMask     = 3743,        
+
+#endif    
+
     Setting_SettingsMax,
     Setting_SettingsAll = Setting_SettingsMax,
 
