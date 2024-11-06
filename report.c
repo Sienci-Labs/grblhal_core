@@ -2566,8 +2566,9 @@ static void report_spindle (spindle_info_t *spindle, void *data)
         hal.stream.write("V");
     if(spindle->is_current)
         hal.stream.write(", current");
-
+	hal.stream.write(ASCII_EOL);
     }
+}
 }
 
 #if N_SPINDLE > 1
